@@ -16,6 +16,7 @@
     // Only redirect the standard web entry points; media/auth/API hosts are left alone on purpose.
     const REDIRECT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'new.reddit.com', 'sh.reddit.com']);
 
+    // Skip redirects inside iframes to avoid breaking embedded Reddit content.
     if (window.top !== window.self) return;
 
     const url = new URL(window.location.href);

@@ -25,6 +25,8 @@
     if (sessionStorage.getItem(BYPASS_KEY) === '1') return;
     if (url.hostname !== 'm.wikipedia.org' && !url.hostname.endsWith('.m.wikipedia.org')) return;
 
-    url.hostname = url.hostname.replace('.m.wikipedia.org', '.wikipedia.org');
+    url.hostname = url.hostname === 'm.wikipedia.org'
+        ? 'wikipedia.org'
+        : url.hostname.replace('.m.wikipedia.org', '.wikipedia.org');
     window.location.replace(url.toString());
 })();

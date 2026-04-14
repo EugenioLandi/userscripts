@@ -19,6 +19,7 @@
     const DOCS_URL = 'https://docs.github.com/en/copilot/concepts/billing/copilot-requests';
     const CACHE_KEY = 'copilot_model_multipliers_v5';
     const CACHE_TTL = 24 * 60 * 60 * 1000;
+    // Refresh live data sooner than full expiry so the UI can serve cached values while updating in the background.
     const CACHE_REFRESH_AFTER = 6 * 60 * 60 * 1000;
 
     const FALLBACK_MULTIPLIERS = {
