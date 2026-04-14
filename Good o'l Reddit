@@ -1,13 +1,37 @@
 // ==UserScript==
-// @name        Good o'l Reddit
-// @description	Makes sure you're using Good o'l Reddit. (C) TheNH813 2018. License WTFPLV2
-// @version		1.0
-// @match       *://*.reddit.com/*
-// @run-at      document-start
-// @grant       none
+// @name         Good o'l Reddit
+// @description  Redirect supported Reddit web hosts to old.reddit.com while allowing an explicit session bypass.
+// @version      1.2
+// @match        *://*.reddit.com/*
+// @run-at       document-start
+// @grant        none
 // ==/UserScript==
 
-if ( window.location.host != "old.reddit.com" ) {
-    var oldReddit  = window.location.protocol + "//" + "old.reddit.com" + window.location.pathname + window.location.search + window.location.hash;
-    window.location.replace (oldReddit);
-}
+(function () {
+    'use strict';
+
+    const BYPASS_KEY = 'good-ol-reddit-bypass';
+    const BYPASS_PARAM = 'allowNewReddit';
+    const FORCE_PARAM = 'forceOldReddit';
+    const REDIRECT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'new.reddit.com', 'sh.reddit.com']);
+
+    if (window.top !== window.self) return;
+
+    const url = new URL(window.location.href);
+
+    if (url.searchParams.has(BYPASS_PARAM)) {
+        sessionStorage.setItem(BYPASS_KEY, '1');
+        return;
+    }
+
+    if (url.searchParams.has(FORCE_PARAM)) {
+        sessionStorage.removeItem(BYPASS_KEY);
+    }
+
+    if (sessionStorage.getItem(BYPASS_KEY) === '1') return;
+    if (url.hostname === 'old.reddit.com') return;
+    if (!REDIRECT_HOSTS.has(url.hostname)) return;
+
+    url.hostname = 'old.reddit.com';
+    window.location.replace(url.toString());
+})();
