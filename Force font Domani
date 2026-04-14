@@ -29,7 +29,36 @@
         style.textContent = `
             html.${STYLE_ID}-enabled,
             html.${STYLE_ID}-enabled body,
-            html.${STYLE_ID}-enabled body *:not(.material-symbols):not(.fa):not([class*="icon"]):not(svg):not(path) {
+            html.${STYLE_ID}-enabled body :is(
+                main,
+                article,
+                section,
+                div,
+                p,
+                span,
+                a,
+                li,
+                ul,
+                ol,
+                h1,
+                h2,
+                h3,
+                h4,
+                h5,
+                h6,
+                strong,
+                em,
+                small,
+                blockquote,
+                figcaption,
+                td,
+                th,
+                label,
+                button,
+                input,
+                textarea,
+                select
+            ):not(.material-symbols):not(.fa):not([class*="icon"]) {
                 font-family: "Barlow", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
             }
         `;

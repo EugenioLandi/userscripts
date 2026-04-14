@@ -27,7 +27,7 @@
 
 ## Overleaf ZIP Download with Date
 - **Current issues:** filenames were only date-based, sanitization was weak, and there was no visible download status.
-- **Fixes:** improved filename sanitization, added timestamp precision, centralized download handling, and hardened project-name/project-id lookup.
+- **Fixes:** improved filename sanitization, added timestamp precision, centralized download handling, and hardened project name/project ID lookup.
 - **New functionality:** ZIP button with custom naming and inline status feedback for both PDF and ZIP downloads.
 
 ## Wikipedia Mobile to Desktop redirect

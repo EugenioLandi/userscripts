@@ -60,7 +60,7 @@
     }
 
     function buildFilename(extension) {
-        return `${sanitizeFilename(getProjectName())} - ${getTimestamp()}.${extension}`;
+        return `${sanitizeFilename(getProjectName())}- ${getTimestamp()}.${extension}`;
     }
 
     function getStatusElement(anchor) {

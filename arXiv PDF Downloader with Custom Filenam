@@ -125,6 +125,7 @@
             return;
         }
 
+        // Legacy fallback for older userscript managers and browsers without Clipboard API support.
         const input = document.createElement('textarea');
         input.value = text;
         document.body.appendChild(input);

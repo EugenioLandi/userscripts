@@ -193,9 +193,10 @@
     }
 
     function clampPosition(position) {
-        const rect = widget.getBoundingClientRect();
-        const maxX = Math.max(8, window.innerWidth - rect.width - 8);
-        const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+        const width = widget?.offsetWidth || 220;
+        const height = widget?.offsetHeight || 120;
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
 
         return {
             x: Math.min(Math.max(8, position.x), maxX),

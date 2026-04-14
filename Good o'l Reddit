@@ -13,6 +13,7 @@
     const BYPASS_KEY = 'good-ol-reddit-bypass';
     const BYPASS_PARAM = 'allowNewReddit';
     const FORCE_PARAM = 'forceOldReddit';
+    // Only redirect the standard web entry points; media/auth/API hosts are left alone on purpose.
     const REDIRECT_HOSTS = new Set(['reddit.com', 'www.reddit.com', 'new.reddit.com', 'sh.reddit.com']);
 
     if (window.top !== window.self) return;
