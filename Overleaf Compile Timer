@@ -1,0 +1,78 @@
+// ==UserScript==
+// @name         Overleaf Compile Timer
+// @namespace    http://tampermonkey.net/
+// @version      2.2
+// @description  Mostra tempo di compilazione
+// @match        https://www.overleaf.com/project/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    console.log('[Timer] Script avviato');
+
+    let startTime = null;
+
+    // Aspetta che la pagina sia pronta
+    setTimeout(() => {
+        console.log('[Timer] Cerco elementi...');
+
+        // Cerca il bottone recompile
+        const recompileBtn = Array.from(document.querySelectorAll('button'))
+            .find(b => b.textContent.includes('Recompile'));
+
+        if (!recompileBtn) {
+            console.log('[Timer] Bottone Recompile non trovato!');
+            return;
+        }
+
+        console.log('[Timer] Bottone trovato:', recompileBtn);
+
+        // Trova il nodo di testo dentro il bottone
+        function updateButtonText(newText) {
+            const walker = document.createTreeWalker(recompileBtn, NodeFilter.SHOW_TEXT);
+            let node;
+            while (node = walker.nextNode()) {
+                if (node.textContent.includes('Recompile') || node.textContent.includes('s')) {
+                    node.textContent = newText;
+                    break;
+                }
+            }
+        }
+
+        // Imposta timer iniziale
+        updateButtonText('Recompile');
+
+        // Intercetta click
+        recompileBtn.addEventListener('click', () => {
+            console.log('[Timer] Click rilevato!');
+            startTime = Date.now();
+            updateButtonText('Recompile ...');
+
+            // Controlla ogni 100ms se è finita
+            const checker = setInterval(() => {
+                console.log('[Timer] Check:', (Date.now() - startTime)/1000);
+
+                if (Date.now() - startTime > 1000) {
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    updateButtonText(`Recompile ${elapsed.toFixed(2)}s`);
+                    console.log('[Timer] Finito:', elapsed);
+                    clearInterval(checker);
+                    startTime = null;
+                }
+            }, 100);
+
+            // Timeout sicurezza
+            setTimeout(() => {
+                if (startTime) {
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    updateButtonText(`Recompile ${elapsed.toFixed(2)}s`);
+                    clearInterval(checker);
+                }
+            }, 30000);
+        });
+
+    }, 3000);
+
+})();
