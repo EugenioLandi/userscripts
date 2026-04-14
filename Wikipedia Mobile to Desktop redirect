@@ -1,0 +1,9 @@
+// ==UserScript==
+// @name        Wikipedia Mobile to Desktop redirect
+// @namespace   CrabbyBlueberry
+// @include     https://*.m.wikipedia.org/*
+// @include     http://*.m.wikipedia.org/*
+// @version     1.1
+// ==/UserScript==
+
+window.location = window.location.toString().replace('m.wikipedia.org','wikipedia.org');
