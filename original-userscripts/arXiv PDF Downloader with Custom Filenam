@@ -1,0 +1,219 @@
+// ==UserScript==
+// @name         arXiv PDF Downloader with Custom Filename
+// @namespace    https://arxiv.org/
+// @version      2.0.0
+// @description  Download arXiv PDF as "title - author(s) - arxiv id.pdf"
+// @match        https://arxiv.org/abs/*
+// @grant        GM_xmlhttpRequest
+// @connect      arxiv.org
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // ---------- helpers ----------
+  const $ = (sel, root = document) => root.querySelector(sel);
+
+  function clean(text) {
+    return (text || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function sanitizeFilenamePart(text) {
+    // remove illegal chars on Windows/macOS/Linux
+    return clean(text)
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
+      .replace(/\.+$/g, ''); // no trailing dots
+  }
+
+  function truncate(text, max = 200) {
+    if (text.length <= max) return text;
+    return text.slice(0, max).trim();
+  }
+
+  function getArxivId() {
+    // supports: /abs/1234.56789, /abs/1234.56789v2, /abs/math/0301234
+    const m = location.pathname.match(/^\/abs\/(.+)$/);
+    return m ? m[1] : '';
+  }
+
+  function getTitle() {
+    // Preferred: citation_title meta
+    const meta = $('meta[name="citation_title"]');
+    if (meta?.content) return clean(meta.content);
+
+    // Fallback: h1.title
+    const h1 = $('h1.title');
+    if (!h1) return '';
+    return clean(h1.textContent.replace(/^Title:\s*/i, ''));
+  }
+
+  function getAuthors() {
+    // Preferred: all citation_author metas
+    const metas = [...document.querySelectorAll('meta[name="citation_author"]')]
+      .map(m => clean(m.content))
+      .filter(Boolean);
+
+    if (metas.length) return metas.join(', ');
+
+    // Fallback: div.authors links/text
+    const authorDiv = $('div.authors');
+    if (!authorDiv) return '';
+    const names = [...authorDiv.querySelectorAll('a')]
+      .map(a => clean(a.textContent))
+      .filter(Boolean);
+
+    if (names.length) return names.join(', ');
+    return clean(authorDiv.textContent.replace(/^Authors?:\s*/i, ''));
+  }
+
+  function buildFilename({ title, authors, id }) {
+    const t = sanitizeFilenamePart(title || 'Untitled');
+    const a = sanitizeFilenamePart(authors || 'Unknown author(s)');
+    const i = sanitizeFilenamePart(id || 'arXiv');
+
+    return truncate(`${t} - ${a} - ${i}`, 220) + '.pdf';
+  }
+
+  function getPdfUrl(id) {
+    // Use explicit pdf URL with .pdf suffix
+    // Note: this usually handles IDs with version too.
+    return `https://arxiv.org/pdf/${encodeURIComponent(id)}.pdf`;
+  }
+
+  function setStatus(el, msg, isError = false) {
+    el.textContent = msg;
+    el.style.color = isError ? '#b00020' : '#444';
+  }
+
+  function downloadBlob(blob, filename) {
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  }
+
+  function fetchPdfAsBlob(url) {
+    return new Promise((resolve, reject) => {
+      // Prefer GM_xmlhttpRequest if available (userscript environments)
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          responseType: 'blob',
+          onload: (res) => {
+            if (res.status >= 200 && res.status < 300 && res.response) {
+              resolve(res.response);
+            } else {
+              reject(new Error(`HTTP ${res.status}`));
+            }
+          },
+          onerror: () => reject(new Error('Network error')),
+          ontimeout: () => reject(new Error('Request timeout'))
+        });
+        return;
+      }
+
+      // Fallback to fetch
+      fetch(url, { credentials: 'include' })
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.blob();
+        })
+        .then(resolve)
+        .catch(reject);
+    });
+  }
+
+  function injectUI(meta) {
+    const filename = buildFilename(meta);
+    const pdfUrl = getPdfUrl(meta.id);
+
+    const box = document.createElement('div');
+    box.style.cssText = [
+      'margin:12px 0',
+      'padding:10px 12px',
+      'border:1px solid #d0d7de',
+      'border-radius:8px',
+      'background:#f6f8fa',
+      'display:flex',
+      'flex-direction:column',
+      'gap:8px'
+    ].join(';');
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Download PDF with custom filename';
+    btn.style.cssText = [
+      'appearance:none',
+      'border:1px solid #1f6feb',
+      'background:#2f81f7',
+      'color:#fff',
+      'padding:8px 12px',
+      'border-radius:6px',
+      'font-weight:600',
+      'cursor:pointer',
+      'width:fit-content'
+    ].join(';');
+
+    const sub = document.createElement('div');
+    sub.style.cssText = 'font-size:12px;color:#444;word-break:break-word;';
+    sub.textContent = `Filename: ${filename}`;
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:12px;min-height:16px;color:#444;';
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.style.opacity = '0.7';
+      setStatus(status, 'Downloading PDF…');
+
+      try {
+        const blob = await fetchPdfAsBlob(pdfUrl);
+        downloadBlob(blob, filename);
+        setStatus(status, 'Done.');
+      } catch (err) {
+        console.error('[arXiv userscript] download failed:', err);
+        setStatus(
+          status,
+          `Failed (${err?.message || 'unknown error'}). Try opening the PDF directly and saving manually.`,
+          true
+        );
+      } finally {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }
+    });
+
+    box.appendChild(btn);
+    box.appendChild(sub);
+    box.appendChild(status);
+
+    // Insert near download section if possible
+    const anchor =
+      $('.full-text') ||
+      $('#abs-outer') ||
+      $('#content') ||
+      document.body;
+
+    anchor.prepend(box);
+  }
+
+  function main() {
+    const id = getArxivId();
+    if (!id) return;
+
+    const title = getTitle();
+    const authors = getAuthors();
+
+    injectUI({ id, title, authors });
+  }
+
+  main();
+})();
