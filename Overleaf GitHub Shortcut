@@ -139,7 +139,7 @@
         const href = target.getAttribute('href');
         if (href && href !== '#') {
             const destination = new URL(href, window.location.origin).toString();
-            window.location.assign(destination);
+            window.open(destination, '_blank', 'noopener');
             return true;
         }
 
