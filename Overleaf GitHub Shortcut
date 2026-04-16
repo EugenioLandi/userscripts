@@ -170,7 +170,7 @@
             return;
         }
 
-        setStatus(shortcutButton, 'GitHub integration not found on this page yet', true);
+        setStatus(shortcutButton, 'GitHub integration button not visible. Try opening the project menu first.', true);
     }
 
     function createShortcutButton(referenceButton) {
