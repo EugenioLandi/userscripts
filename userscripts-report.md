@@ -30,6 +30,12 @@
 - **Fixes:** improved filename sanitization, added timestamp precision, centralized download handling, and hardened project name/project ID lookup.
 - **New functionality:** ZIP button with custom naming and inline status feedback for both PDF and ZIP downloads.
 
+
+## Overleaf GitHub Shortcut
+- **Current issues:** accessing the GitHub integration requires opening Overleaf menus even when the PDF toolbar is already visible.
+- **Fixes:** added a dedicated toolbar shortcut that searches for the existing GitHub integration control and reuses it when available.
+- **New functionality:** GitHub shortcut beside the PDF/ZIP controls with inline status feedback when the integration action cannot be found yet.
+
 ## Wikipedia Mobile to Desktop redirect
 - **Current issues:** hostname replacement was overly simplistic and offered no way to stay on mobile when needed.
 - **Fixes:** switched to URL-based hostname handling and safe desktop redirection with `location.replace`.
