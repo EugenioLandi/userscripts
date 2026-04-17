@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf ZIP Download with Date
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Add custom-named PDF and ZIP downloads to Overleaf with timestamped filenames and status feedback
 // @author       You
 // @match        https://*.overleaf.com/*
@@ -110,7 +110,7 @@
         }
     }
 
-    function makeCompactToolbarButton(button, label, emoji, title) {
+    function makeCompactToolbarButton(button, label, textLabel, title) {
         button.draggable = false;
         button.removeAttribute('disabled');
         button.removeAttribute('aria-disabled');
@@ -122,7 +122,7 @@
         button.style.cursor = 'pointer';
         button.style.minWidth = 'auto';
         button.style.padding = '0 6px';
-        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font-size:15px;line-height:1;">${emoji}</span>`;
+        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font:600 12px/1 system-ui,sans-serif;letter-spacing:.01em;">${textLabel}</span>`;
         return button;
     }
 
@@ -134,7 +134,7 @@
         zipButton.classList.add(ZIP_BUTTON_CLASS);
         zipButton.removeAttribute('href');
         zipButton.href = '#';
-        makeCompactToolbarButton(zipButton, 'Download ZIP', '🗜️', 'Download ZIP with custom filename');
+        makeCompactToolbarButton(zipButton, 'Download ZIP', 'Zip', 'Download ZIP with custom filename');
         zipButton.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();

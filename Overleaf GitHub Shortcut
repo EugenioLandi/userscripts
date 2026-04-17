@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf GitHub Shortcut
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Add a GitHub integration shortcut next to the PDF/ZIP controls in Overleaf
 // @author       You
 // @match        https://*.overleaf.com/*
@@ -24,6 +24,11 @@
 
     function getZipButton() {
         return document.querySelector('.custom-zip-download-btn');
+    }
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
     }
 
     function getClickableText(element) {
@@ -125,6 +130,17 @@
         return new Promise(resolve => window.setTimeout(resolve, ms));
     }
 
+    function triggerClick(element) {
+        if (!element) return false;
+        element.focus?.({ preventScroll: true });
+        if (typeof element.click === 'function') {
+            element.click();
+            return true;
+        }
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+    }
+
     function activateTarget(target) {
         const href = target.getAttribute('href');
         if (href && href !== '#') {
@@ -133,7 +149,14 @@
             return true;
         }
 
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return triggerClick(target);
+    }
+
+    function openProjectSettings(shortcutButton) {
+        const projectId = getProjectId();
+        if (!projectId) return false;
+        window.open(new URL(`/project/${encodeURIComponent(projectId)}/settings`, window.location.origin).toString(), '_blank', 'noopener');
+        setStatus(shortcutButton, 'Opened project settings');
         return true;
     }
 
@@ -148,7 +171,7 @@
         }
 
         for (const menuTrigger of findMenuTrigger().slice(0, 5)) {
-            menuTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            triggerClick(menuTrigger);
             await wait(250);
             target = findGitHubTarget();
             if (target) {
@@ -158,10 +181,12 @@
             }
         }
 
-        setStatus(shortcutButton, 'GitHub integration button not visible. Try opening the project menu first.', true);
+        if (openProjectSettings(shortcutButton)) return;
+
+        setStatus(shortcutButton, 'GitHub integration button not visible.', true);
     }
 
-    function makeCompactToolbarButton(button, label, emoji, title) {
+    function makeCompactToolbarButton(button, label, textLabel, title) {
         button.draggable = false;
         button.removeAttribute('disabled');
         button.removeAttribute('aria-disabled');
@@ -173,7 +198,7 @@
         button.style.cursor = 'pointer';
         button.style.minWidth = 'auto';
         button.style.padding = '0 6px';
-        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font-size:15px;line-height:1;">${emoji}</span>`;
+        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font:600 12px/1 system-ui,sans-serif;letter-spacing:.01em;">${textLabel}</span>`;
         return button;
     }
 
@@ -185,7 +210,7 @@
         button.classList.add(BUTTON_CLASS);
         button.removeAttribute('href');
         button.href = '#';
-        makeCompactToolbarButton(button, 'Open GitHub integration', '🐙', 'Open GitHub integration');
+        makeCompactToolbarButton(button, 'Open GitHub integration', 'GH', 'Open GitHub integration');
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();

@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/settings/copilot*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -18,6 +19,7 @@
     const SETTINGS_URL = 'https://github.com/settings/copilot/features';
     const REFRESH_INTERVAL = 5 * 60 * 1000;
     const DISPLAY_ID = 'copilot-usage-display';
+    const DISPLAY_HOST_ID = 'copilot-usage-display-host';
 
     let refreshTimer = null;
     let routeKey = location.pathname;
@@ -124,6 +126,10 @@
         };
     }
 
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && element.getClientRects().length > 0);
+    }
+
     function ensureDisplay() {
         let container = document.getElementById(DISPLAY_ID);
         if (container) return container;
@@ -151,27 +157,57 @@
         return container;
     }
 
+    function ensureDisplayHost(parent) {
+        let host = document.getElementById(DISPLAY_HOST_ID);
+        if (!host) {
+            host = document.createElement('div');
+            host.id = DISPLAY_HOST_ID;
+            host.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;';
+        }
+
+        if (host.parentElement !== parent) {
+            if (parent.matches('main, [role="main"]')) {
+                parent.prepend(host);
+            } else {
+                parent.appendChild(host);
+            }
+        }
+
+        return host;
+    }
+
     function findInsertionPoint() {
-        return (
-            document.querySelector('[data-testid="copilot-subpage-nav"]') ||
-            document.querySelector('main h1')?.parentElement ||
-            document.querySelector('header nav') ||
-            document.querySelector('header')
-        );
+        const selectors = [
+            '[data-testid="copilot-subpage-nav"]',
+            '[data-testid*="copilot-subpage-nav"]',
+            '[data-testid*="page-header-actions"]',
+            'main h1',
+            'main h2',
+            '[role="main"] h1',
+            '[role="main"] h2',
+            'header nav',
+            'header',
+            'main',
+            '[role="main"]',
+        ];
+
+        for (const selector of selectors) {
+            const candidate = document.querySelector(selector);
+            if (!candidate || !isVisible(candidate)) continue;
+            if (/^h[1-6]$/i.test(candidate.tagName)) return candidate.parentElement || candidate;
+            return candidate;
+        }
+
+        return null;
     }
 
     function mountDisplay() {
         const insertionPoint = findInsertionPoint();
         if (!insertionPoint) return;
+        const host = ensureDisplayHost(insertionPoint);
         const display = ensureDisplay();
-        if (!display.isConnected) {
-            if (getComputedStyle(insertionPoint).display === 'block') {
-                insertionPoint.style.display = 'flex';
-                insertionPoint.style.alignItems = 'center';
-                insertionPoint.style.flexWrap = 'wrap';
-                insertionPoint.style.gap = '8px';
-            }
-            insertionPoint.appendChild(display);
+        if (display.parentElement !== host) {
+            host.appendChild(display);
         }
     }
 

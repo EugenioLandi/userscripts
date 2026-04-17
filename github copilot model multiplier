@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         GitHub Copilot Model Multipliers
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.1
 // @description  Display premium request multipliers next to Copilot models with improved parsing, caching, and selection badges
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/settings/copilot*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      docs.github.com
@@ -62,6 +63,10 @@
 
     function formatMultiplier(multiplier) {
         return typeof multiplier === 'number' && !Number.isNaN(multiplier) ? `(${multiplier}×)` : '';
+    }
+
+    function formatTimestamp(timestamp = metadata.timestamp) {
+        return new Date(timestamp).toLocaleString();
     }
 
     function loadCache() {
@@ -189,17 +194,25 @@
     }
 
     function extractModelName(element) {
-        const texts = [...element.querySelectorAll('span, div')]
-            .map(node => node.textContent.trim())
-            .filter(text => text && !/^\(.+×\)$/.test(text));
+        const texts = [
+            element.getAttribute('aria-label'),
+            element.getAttribute('title'),
+            element.textContent,
+            ...[...element.querySelectorAll('span, div, strong')].map(node => node.textContent),
+        ]
+            .map(text => String(text || '').trim())
+            .filter(text => text && !/^\(.+×\)$/.test(text) && !/^models?$/i.test(text));
 
         const best = texts.sort((a, b) => b.length - a.length)[0] || element.textContent.trim();
         return best.replace(/\s*\(.+×\)\s*$/g, '').trim();
     }
 
     function badgeTitle() {
-        const time = new Date(metadata.timestamp).toLocaleString();
-        return `Multiplier source: ${metadata.source}. Last update: ${time}.`;
+        return `Multiplier source: ${metadata.source}. Last update: ${formatTimestamp()}.`;
+    }
+
+    function modelsLabelTitle() {
+        return `Model multipliers last updated by the script: ${formatTimestamp()}. Source: ${metadata.source}.`;
     }
 
     function ensureBadge(element, attributeName) {
@@ -246,13 +259,26 @@
             '[role="option"]',
             'button[role="menuitem"]',
             'div[role="menuitem"]',
+            'summary',
+            'button[aria-haspopup="menu"]',
+            'button[aria-haspopup="dialog"]',
+            '[data-testid*="model"]',
+            '[data-testid*="model-selector"] *',
         ], 'data-cm-badge');
 
         decorateElements([
             'button[aria-haspopup="true"]',
             '[data-testid*="model"] button',
             '[data-testid*="model-selector"]',
+            '[data-testid*="model-picker"]',
+            '[data-testid*="agent-model"]',
+            'summary',
         ], 'data-cm-current-badge');
+
+        for (const element of document.querySelectorAll('button, span, div, summary, h1, h2, h3, label')) {
+            if (normalize(element.textContent) !== 'models') continue;
+            element.title = modelsLabelTitle();
+        }
     }
 
     async function init() {
