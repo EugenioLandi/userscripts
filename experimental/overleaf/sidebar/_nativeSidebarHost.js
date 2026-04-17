@@ -9,13 +9,14 @@
     const PANEL_ATTR = 'data-experimental-overleaf-native-panel';
     const TAB_ATTR = 'data-experimental-overleaf-native-tab';
     const FOOTER_CLASS = 'experimental-overleaf-native-sidebar-footer-slot';
+    const CONTAINER_ID = 'experimental-overleaf-native-sidebar-panels';
+    const MODE_ATTR = 'data-experimental-sidebar-mode';
+    const ACTIVE_TAB_ATTR = 'data-experimental-sidebar-active';
     const NATIVE_TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
     const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
     const NATIVE_FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
-    const NATIVE_ACTIVE_TAB_SELECTOR = '[role="tab"][aria-selected="true"]';
-    const NATIVE_ACTIVE_PANE_SELECTOR = '.tab-pane.active[role="tabpanel"]';
-    const SIDEBAR_OPEN_DELAY_MS = 180;
-    const DOM_SYNC_DEBOUNCE_MS = 120;
+    const SIDEBAR_OPEN_DELAY_MS = 200;
+    const DOM_SYNC_DEBOUNCE_MS = 150;
 
     const state = {
         panels: new Map(),
@@ -26,27 +27,12 @@
         refreshTimer: null,
         observer: null,
         lastHref: global.location.href,
-        lastNativeTabId: null,
-        lastNativePaneId: null,
     };
-
-    function normalizeText(value) {
-        return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    }
 
     function isVisible(element) {
         if (!element || !element.isConnected) return false;
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
-    }
-
-    function getElementText(element) {
-        return normalizeText([
-            element?.textContent,
-            element?.getAttribute?.('aria-label'),
-            element?.getAttribute?.('title'),
-            element?.getAttribute?.('data-testid'),
-        ].filter(Boolean).join(' '));
     }
 
     function wait(ms) {
@@ -69,13 +55,11 @@
             'input[aria-label="Project name"]',
             'input[name="projectName"]',
         ];
-
         for (const selector of selectors) {
             const element = document.querySelector(selector);
             const value = element?.value || element?.textContent;
             if (value && value.trim()) return value.trim();
         }
-
         return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
     }
 
@@ -90,7 +74,6 @@
             await navigator.clipboard.writeText(text);
             return;
         }
-
         const textarea = document.createElement('textarea');
         textarea.value = text;
         textarea.setAttribute('readonly', 'readonly');
@@ -113,7 +96,7 @@
     }
 
     function writeJson(key, value) {
-        localStorage.setItem(key, JSON.stringify(value));
+        try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
     }
 
     function formatDateTime(timestamp) {
@@ -127,8 +110,10 @@
     }
 
     function persistState() {
-        localStorage.setItem(ACTIVE_KEY, state.activeId || '');
-        localStorage.setItem(OPEN_KEY, state.isOpen && state.activeId ? '1' : '0');
+        try {
+            localStorage.setItem(ACTIVE_KEY, state.activeId || '');
+            localStorage.setItem(OPEN_KEY, state.isOpen && state.activeId ? '1' : '0');
+        } catch { /* quota */ }
     }
 
     function getPanelApi(panelId) {
@@ -150,20 +135,8 @@
 
     function getNativeTabs(tabsWrapper) {
         return tabsWrapper
-            ? [...tabsWrapper.children].filter(element => element.getAttribute('role') === 'tab' && !element.hasAttribute(TAB_ATTR))
+            ? [...tabsWrapper.children].filter(el => el.getAttribute('role') === 'tab' && !el.hasAttribute(TAB_ATTR))
             : [];
-    }
-
-    function findNativeActiveTab(tabsWrapper) {
-        return tabsWrapper?.querySelector(NATIVE_ACTIVE_TAB_SELECTOR) || null;
-    }
-
-    function findNativeActivePane(tabContent, activeTab) {
-        const controlledPane = activeTab?.getAttribute('aria-controls')
-            ? document.getElementById(activeTab.getAttribute('aria-controls'))
-            : null;
-        if (controlledPane) return controlledPane;
-        return tabContent?.querySelector(NATIVE_ACTIVE_PANE_SELECTOR) || null;
     }
 
     function resolveContext() {
@@ -171,16 +144,19 @@
         const fileTreeButton = tabsWrapper?.querySelector(NATIVE_FILE_TREE_TAB_SELECTOR) || null;
         const templateButton = fileTreeButton || getNativeTabs(tabsWrapper)[0] || null;
         const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
-        const activeNativeTab = findNativeActiveTab(tabsWrapper);
-        const activeNativePane = findNativeActivePane(tabContent, activeNativeTab);
-        return {
-            fileTreeButton,
-            tabsWrapper,
-            templateButton,
-            tabContent,
-            activeNativeTab,
-            activeNativePane,
-        };
+        const railContent = tabContent?.closest('.ide-rail-content') || null;
+        return { tabsWrapper, fileTreeButton, templateButton, tabContent, railContent };
+    }
+
+    function ensurePanelContainer(railContent) {
+        if (!railContent) return null;
+        let container = railContent.querySelector(`#${CONTAINER_ID}`);
+        if (!container) {
+            container = document.createElement('div');
+            container.id = CONTAINER_ID;
+            railContent.appendChild(container);
+        }
+        return container;
     }
 
     function ensureStyle() {
@@ -188,10 +164,32 @@
         const style = document.createElement('style');
         style.id = STYLE_ID;
         style.textContent = `
-            [${TAB_ATTR}] {
-                position: relative;
+            /* ---- custom panel container ---- */
+            #${CONTAINER_ID} {
+                display: none;
+                flex-direction: column;
+                height: 100%;
+                min-height: 0;
+            }
+            .ide-rail-content[${MODE_ATTR}="custom"] > .ide-rail-tab-content {
+                display: none !important;
+            }
+            .ide-rail-content[${MODE_ATTR}="custom"] > #${CONTAINER_ID} {
+                display: flex !important;
             }
 
+            /* ---- native tab de-emphasis when custom panel active ---- */
+            .ide-rail-tabs-wrapper[${ACTIVE_TAB_ATTR}] > .nav-link.active:not([${TAB_ATTR}]),
+            .ide-rail-tabs-wrapper[${ACTIVE_TAB_ATTR}] > .nav-link.open-rail:not([${TAB_ATTR}]) {
+                background-color: transparent !important;
+                box-shadow: none !important;
+            }
+
+            /* ---- tab button icons ---- */
+            [${TAB_ATTR}] {
+                position: relative;
+                transition: background-color 0.15s ease, box-shadow 0.15s ease;
+            }
             [${TAB_ATTR}] svg {
                 width: 20px;
                 height: 20px;
@@ -199,148 +197,188 @@
                 pointer-events: none;
             }
 
+            /* ---- panel root ---- */
             [${PANEL_ATTR}] {
                 display: none;
                 flex-direction: column;
                 height: 100%;
                 min-height: 0;
-                background: var(--experimental-overleaf-sidebar-bg, #ffffff);
-                color: var(--experimental-overleaf-sidebar-fg, #1f2937);
+                background: var(--ol-sidebar-bg, #fff);
+                color: var(--ol-sidebar-fg, #1b2733);
             }
-
-            [${PANEL_ATTR}].is-open,
-            [${PANEL_ATTR}].active {
+            [${PANEL_ATTR}].is-open {
                 display: flex;
             }
 
+            /* ---- panel header ---- */
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-header {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                gap: 12px;
-                padding: 16px;
-                border-bottom: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.2));
+                gap: 10px;
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
             }
-
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-heading {
                 min-width: 0;
             }
-
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-title {
                 margin: 0;
-                font-size: 1rem;
-                font-weight: 600;
-                line-height: 1.3;
+                font-size: 0.9375rem;
+                font-weight: 700;
+                line-height: 1.35;
                 color: inherit;
             }
-
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-subtitle {
-                margin: 4px 0 0;
-                font-size: 0.8125rem;
-                line-height: 1.4;
-                color: var(--experimental-overleaf-sidebar-muted, rgba(87, 96, 106, 0.95));
+                margin: 3px 0 0;
+                font-size: 0.75rem;
+                line-height: 1.45;
+                color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
             }
 
+            /* ---- close button ---- */
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close {
-                width: 32px;
-                height: 32px;
+                flex-shrink: 0;
+                width: 28px;
+                height: 28px;
                 border: 0;
-                border-radius: 8px;
+                border-radius: 6px;
                 background: transparent;
                 color: inherit;
                 cursor: pointer;
-                font-size: 18px;
+                font-size: 17px;
                 line-height: 1;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                transition: background-color 0.12s ease;
             }
-
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close:hover {
-                background: var(--experimental-overleaf-sidebar-hover, rgba(127, 127, 127, 0.12));
+                background: var(--ol-sidebar-hover, rgba(125, 125, 125, 0.1));
+            }
+            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close:focus-visible {
+                outline: 2px solid var(--ol-sidebar-focus, #1a73e8);
+                outline-offset: 1px;
             }
 
+            /* ---- panel body ---- */
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-body {
                 flex: 1 1 auto;
                 min-height: 0;
                 overflow: auto;
-                padding: 16px;
+                padding: 14px 16px;
                 display: flex;
                 flex-direction: column;
-                gap: 12px;
+                gap: 10px;
                 box-sizing: border-box;
             }
 
+            /* ---- footer ---- */
             .${FOOTER_CLASS} {
-                padding: 12px 16px 16px;
-                border-top: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.2));
-                font-size: 0.75rem;
-                line-height: 1.4;
-                color: var(--experimental-overleaf-sidebar-muted, rgba(87, 96, 106, 0.95));
-                min-height: 16px;
+                padding: 10px 16px 14px;
+                border-top: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
+                font-size: 0.6875rem;
+                line-height: 1.45;
+                color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
+                min-height: 14px;
             }
 
+            /* ---- cards ---- */
             [${PANEL_ATTR}] .ol-native-sidebar-card {
-                border: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.2));
-                border-radius: 12px;
-                padding: 12px;
-                background: var(--experimental-overleaf-sidebar-card-bg, rgba(255, 255, 255, 0.55));
+                border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
+                border-radius: 6px;
+                padding: 10px 12px;
+                background: var(--ol-sidebar-card-bg, rgba(255, 255, 255, 0.5));
                 box-sizing: border-box;
             }
 
+            /* ---- muted text ---- */
             [${PANEL_ATTR}] .ol-native-sidebar-muted {
                 margin: 0;
-                font-size: 0.875rem;
+                font-size: 0.8125rem;
                 line-height: 1.5;
-                color: var(--experimental-overleaf-sidebar-muted, rgba(87, 96, 106, 0.95));
+                color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
             }
 
+            /* ---- form controls ---- */
             [${PANEL_ATTR}] .ol-native-sidebar-input,
             [${PANEL_ATTR}] .ol-native-sidebar-textarea {
                 width: 100%;
                 box-sizing: border-box;
-                border: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.25));
-                border-radius: 10px;
-                padding: 10px 12px;
-                background: var(--experimental-overleaf-sidebar-input-bg, rgba(255, 255, 255, 0.92));
+                border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.22));
+                border-radius: 6px;
+                padding: 8px 10px;
+                background: var(--ol-sidebar-input-bg, rgba(255, 255, 255, 0.88));
                 color: inherit;
                 font: inherit;
+                font-size: 0.8125rem;
+                transition: border-color 0.12s ease;
             }
-
+            [${PANEL_ATTR}] .ol-native-sidebar-input:focus,
+            [${PANEL_ATTR}] .ol-native-sidebar-textarea:focus {
+                border-color: var(--ol-sidebar-focus, #1a73e8);
+                outline: none;
+            }
             [${PANEL_ATTR}] .ol-native-sidebar-textarea {
-                min-height: 240px;
+                min-height: 200px;
                 resize: vertical;
                 font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                font-size: 0.75rem;
+                line-height: 1.55;
             }
 
+            /* ---- buttons ---- */
             [${PANEL_ATTR}] .ol-native-sidebar-button,
             [${PANEL_ATTR}] .ol-native-sidebar-link-button {
-                border: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.25));
-                border-radius: 10px;
-                padding: 8px 10px;
-                background: var(--experimental-overleaf-sidebar-button-bg, rgba(127, 127, 127, 0.08));
+                border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.22));
+                border-radius: 6px;
+                padding: 6px 10px;
+                background: var(--ol-sidebar-button-bg, rgba(125, 125, 125, 0.06));
                 color: inherit;
                 text-decoration: none;
                 cursor: pointer;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                gap: 6px;
-                font-size: 0.8125rem;
+                gap: 5px;
+                font-size: 0.75rem;
                 font-weight: 600;
-                line-height: 1.2;
+                line-height: 1.3;
                 box-sizing: border-box;
+                transition: background-color 0.12s ease;
             }
-
             [${PANEL_ATTR}] .ol-native-sidebar-button:hover,
             [${PANEL_ATTR}] .ol-native-sidebar-link-button:hover {
-                background: var(--experimental-overleaf-sidebar-hover, rgba(127, 127, 127, 0.12));
+                background: var(--ol-sidebar-hover, rgba(125, 125, 125, 0.1));
+            }
+            [${PANEL_ATTR}] .ol-native-sidebar-button:focus-visible,
+            [${PANEL_ATTR}] .ol-native-sidebar-link-button:focus-visible {
+                outline: 2px solid var(--ol-sidebar-focus, #1a73e8);
+                outline-offset: 1px;
             }
 
+            /* ---- lists ---- */
             [${PANEL_ATTR}] .ol-native-sidebar-list {
                 list-style: none;
                 padding: 0;
                 margin: 0;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
+                gap: 8px;
+            }
+
+            /* ---- dark mode adjustments ---- */
+            .overall-theme-dark [${PANEL_ATTR}],
+            [data-theme="dark"] [${PANEL_ATTR}] {
+                --ol-sidebar-bg: #1b2733;
+                --ol-sidebar-fg: #d9e0e8;
+                --ol-sidebar-border: rgba(200, 210, 220, 0.12);
+                --ol-sidebar-muted: rgba(180, 190, 200, 0.72);
+                --ol-sidebar-hover: rgba(200, 210, 220, 0.08);
+                --ol-sidebar-button-bg: rgba(200, 210, 220, 0.06);
+                --ol-sidebar-input-bg: rgba(0, 0, 0, 0.18);
+                --ol-sidebar-card-bg: rgba(255, 255, 255, 0.04);
+                --ol-sidebar-focus: #5ca0e8;
             }
         `;
         document.head.appendChild(style);
@@ -387,35 +425,60 @@
         return button;
     }
 
-    function applyTheme(context, customPanel, customButtons) {
-        const panelContainer = context.activeNativePane || context.tabContent;
-        const fileTreeButton = context.fileTreeButton;
-        const activeTab = context.activeNativeTab || fileTreeButton;
-        const panelStyles = panelContainer ? getComputedStyle(panelContainer) : null;
-        const activeStyles = activeTab ? getComputedStyle(activeTab) : null;
-        const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
-        const root = customPanel;
+    function detectThemeColors(context) {
+        const nativePane = context.tabContent?.querySelector('.tab-pane.active') || context.tabContent;
+        const paneStyles = nativePane ? getComputedStyle(nativePane) : null;
+        const bg = paneStyles?.backgroundColor || '';
+        const fg = paneStyles?.color || '';
+        const border = paneStyles?.borderColor || '';
+        const isDark = bg && parseLuminance(bg) < 0.35;
+        return {
+            bg: bg || (isDark ? '#1b2733' : '#fff'),
+            fg: fg || (isDark ? '#d9e0e8' : '#1b2733'),
+            border: border || (isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.18)'),
+            muted: isDark ? 'rgba(180,190,200,0.72)' : 'rgba(90,100,110,0.88)',
+            hover: isDark ? 'rgba(200,210,220,0.08)' : 'rgba(125,125,125,0.1)',
+            buttonBg: isDark ? 'rgba(200,210,220,0.06)' : 'rgba(125,125,125,0.06)',
+            inputBg: isDark ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.88)',
+            cardBg: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.5)',
+            focus: isDark ? '#5ca0e8' : '#1a73e8',
+        };
+    }
 
-        if (panelStyles) {
-            root.style.setProperty('--experimental-overleaf-sidebar-bg', panelStyles.backgroundColor || '#ffffff');
-            root.style.setProperty('--experimental-overleaf-sidebar-fg', panelStyles.color || '#1f2937');
-            root.style.setProperty('--experimental-overleaf-sidebar-border', panelStyles.borderColor || 'rgba(127,127,127,0.2)');
-        }
-        root.style.setProperty('--experimental-overleaf-sidebar-muted', panelStyles?.color || 'rgba(87, 96, 106, 0.95)');
-        root.style.setProperty('--experimental-overleaf-sidebar-hover', 'rgba(127, 127, 127, 0.12)');
-        root.style.setProperty('--experimental-overleaf-sidebar-button-bg', 'rgba(127, 127, 127, 0.08)');
-        root.style.setProperty('--experimental-overleaf-sidebar-input-bg', panelStyles?.backgroundColor || 'rgba(255,255,255,0.92)');
-        root.style.setProperty('--experimental-overleaf-sidebar-card-bg', panelStyles?.backgroundColor || 'rgba(255,255,255,0.55)');
+    function parseLuminance(colorString) {
+        const m = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!m) return 0.5;
+        const [r, g, b] = [+m[1], +m[2], +m[3]];
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    }
+
+    function applyTheme(context, panelContainer, customButtons) {
+        const colors = detectThemeColors(context);
+        const root = panelContainer;
+        if (!root) return;
+        root.style.setProperty('--ol-sidebar-bg', colors.bg);
+        root.style.setProperty('--ol-sidebar-fg', colors.fg);
+        root.style.setProperty('--ol-sidebar-border', colors.border);
+        root.style.setProperty('--ol-sidebar-muted', colors.muted);
+        root.style.setProperty('--ol-sidebar-hover', colors.hover);
+        root.style.setProperty('--ol-sidebar-button-bg', colors.buttonBg);
+        root.style.setProperty('--ol-sidebar-input-bg', colors.inputBg);
+        root.style.setProperty('--ol-sidebar-card-bg', colors.cardBg);
+        root.style.setProperty('--ol-sidebar-focus', colors.focus);
+
+        const fileTreeButton = context.fileTreeButton;
+        const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
+        const activeNativeTab = context.tabsWrapper?.querySelector('[role="tab"][aria-selected="true"]');
+        const activeStyles = activeNativeTab ? getComputedStyle(activeNativeTab) : null;
 
         customButtons.forEach(button => {
             button.style.color = buttonStyles?.color || '';
             button.style.background = 'transparent';
+            button.style.boxShadow = 'none';
             if (state.isOpen && button.dataset.panelId === state.activeId) {
                 button.style.background = activeStyles?.backgroundColor || 'rgba(25, 135, 84, 0.18)';
                 button.style.color = activeStyles?.color || buttonStyles?.color || '';
                 button.style.boxShadow = activeStyles?.boxShadow || 'none';
-            } else {
-                button.style.boxShadow = 'none';
             }
         });
     }
@@ -425,20 +488,18 @@
             if (button.dataset.experimentalOverleafNativeSidebarBound === '1') return;
             button.dataset.experimentalOverleafNativeSidebarBound = '1';
             button.addEventListener('click', () => {
-                state.lastNativeTabId = button.id || state.lastNativeTabId;
-                state.lastNativePaneId = button.getAttribute('aria-controls') || state.lastNativePaneId;
                 if (state.isOpen) {
                     state.isOpen = false;
                     persistState();
-                    scheduleSync(SIDEBAR_OPEN_DELAY_MS);
+                    scheduleSync(0);
                 }
             });
         });
     }
 
-    function ensureCustomPanel(context, panel) {
-        if (!context.tabContent) return null;
-        let panelRoot = context.tabContent.querySelector(`[${TAB_ATTR}="${panel.id}"][${PANEL_ATTR}]`);
+    function ensureCustomPanel(panelContainer, panel) {
+        if (!panelContainer) return null;
+        let panelRoot = panelContainer.querySelector(`[${TAB_ATTR}="${panel.id}"][${PANEL_ATTR}]`);
         if (!panelRoot) {
             panelRoot = document.createElement('div');
             panelRoot.setAttribute(PANEL_ATTR, 'true');
@@ -446,7 +507,7 @@
             panelRoot.setAttribute('role', 'tabpanel');
             panelRoot.id = `experimental-overleaf-native-sidebar-pane-${panel.id}`;
             panelRoot.setAttribute('aria-labelledby', `experimental-overleaf-native-sidebar-tab-${panel.id}`);
-            panelRoot.className = 'tab-pane';
+
             const header = document.createElement('div');
             header.className = 'experimental-overleaf-native-sidebar-header';
             const heading = document.createElement('div');
@@ -461,7 +522,7 @@
             close.type = 'button';
             close.className = 'experimental-overleaf-native-sidebar-close';
             close.setAttribute('aria-label', 'Close custom sidebar panel');
-            close.textContent = '×';
+            close.textContent = '\u00d7';
             close.addEventListener('click', () => closePanel());
 
             header.append(heading, close);
@@ -471,36 +532,34 @@
             const footer = document.createElement('div');
             footer.className = FOOTER_CLASS;
             panelRoot.append(header, body, footer);
-            context.tabContent.appendChild(panelRoot);
+            panelContainer.appendChild(panelRoot);
         }
         return panelRoot;
     }
 
-    function renderPanelContent(context, panelDefinition) {
-        const panelRoot = ensureCustomPanel(context, panelDefinition);
+    function renderPanelContent(panelContainer, panelDefinition) {
+        const panelRoot = ensureCustomPanel(panelContainer, panelDefinition);
         if (!panelRoot) return;
 
         const title = panelRoot.querySelector('.experimental-overleaf-native-sidebar-title');
         const subtitle = panelRoot.querySelector('.experimental-overleaf-native-sidebar-subtitle');
         const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
         const footer = panelRoot.querySelector(`.${FOOTER_CLASS}`);
-        title.textContent = panelDefinition.title;
-        subtitle.textContent = panelDefinition.subtitle || '';
-        body.textContent = '';
+        if (title) title.textContent = panelDefinition.title;
+        if (subtitle) subtitle.textContent = panelDefinition.subtitle || '';
+        if (body) body.textContent = '';
         state.footerText = '';
         panelDefinition.render(body, getPanelApi(panelDefinition.id));
-        footer.textContent = state.footerText;
+        if (footer) footer.textContent = state.footerText;
         panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectIdOrEmpty();
         panelRoot.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
-        panelRoot.classList.add('is-open');
     }
 
     function shouldRenderPanel(panelRoot, panelDefinition) {
         if (!panelRoot) return true;
-        const currentProjectId = getCurrentProjectIdOrEmpty();
-        if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== currentProjectId) return true;
-        const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
-        if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== currentRenderVersion) return true;
+        if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== getCurrentProjectIdOrEmpty()) return true;
+        const expected = String(state.renderVersions.get(panelDefinition.id) || 0);
+        if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== expected) return true;
         const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
         return !body || !body.hasChildNodes();
     }
@@ -508,7 +567,7 @@
     async function ensureSidebarOpen() {
         let context = resolveContext();
         if (context.tabContent) return context;
-        if (context.fileTreeButton && isVisible(context.fileTreeButton)) {
+        if (state.isOpen && state.activeId && context.fileTreeButton && isVisible(context.fileTreeButton)) {
             context.fileTreeButton.click();
             await wait(SIDEBAR_OPEN_DELAY_MS);
             context = resolveContext();
@@ -519,90 +578,78 @@
     function syncTabs(context) {
         const template = context.templateButton;
         if (!context.tabsWrapper || !template) return [];
-
         const buttons = [];
-        [...state.panels.values()].sort((left, right) => (left.order || 0) - (right.order || 0)).forEach(panel => {
-            let button = context.tabsWrapper.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
-            if (!button) {
-                button = createCustomTabButton(panel, template);
-                context.tabsWrapper.appendChild(button);
-            }
-            buttons.push(button);
-        });
+        [...state.panels.values()]
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .forEach(panel => {
+                let button = context.tabsWrapper.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
+                if (!button) {
+                    button = createCustomTabButton(panel, template);
+                    context.tabsWrapper.appendChild(button);
+                }
+                buttons.push(button);
+            });
         return buttons;
     }
 
-    function setTabState(button, isActive) {
-        button.setAttribute('aria-selected', isActive ? 'true' : 'false');
-        button.setAttribute('tabindex', isActive ? '0' : '-1');
-        button.classList.toggle('active', isActive);
-        button.classList.toggle('open-rail', isActive);
-    }
-
-    function setPaneState(pane, isActive) {
-        pane.classList.toggle('active', isActive);
-        pane.classList.toggle('is-open', isActive);
-        pane.hidden = !isActive;
-    }
-
-    function rememberNativeSelection(context) {
-        state.lastNativeTabId = context.activeNativeTab?.id || state.lastNativeTabId;
-        state.lastNativePaneId = context.activeNativePane?.id || state.lastNativePaneId;
-    }
-
-    function syncPanels(context) {
-        if (!context.tabContent) return [];
+    function syncPanels(panelContainer) {
+        if (!panelContainer) return [];
         return [...state.panels.values()]
-            .sort((left, right) => (left.order || 0) - (right.order || 0))
-            .map(panel => ensureCustomPanel(context, panel))
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(panel => ensureCustomPanel(panelContainer, panel))
             .filter(Boolean);
     }
 
     function updateSelectionState(context, customButtons, customPanels) {
-        const nativeTabs = getNativeTabs(context.tabsWrapper);
-        const nativePanes = context.tabContent
-            ? [...context.tabContent.querySelectorAll('[role="tabpanel"]')].filter(pane => !pane.hasAttribute(PANEL_ATTR))
-            : [];
-
         if (state.isOpen && state.activeId) {
-            nativeTabs.forEach(button => setTabState(button, false));
-            nativePanes.forEach(pane => setPaneState(pane, false));
-            customButtons.forEach(button => setTabState(button, button.dataset.panelId === state.activeId));
-            customPanels.forEach(panel => setPaneState(panel, panel.getAttribute(TAB_ATTR) === state.activeId));
+            if (context.railContent) context.railContent.setAttribute(MODE_ATTR, 'custom');
+            if (context.tabsWrapper) context.tabsWrapper.setAttribute(ACTIVE_TAB_ATTR, state.activeId);
+            customButtons.forEach(button => {
+                const isActive = button.dataset.panelId === state.activeId;
+                button.classList.toggle('active', isActive);
+                button.classList.toggle('open-rail', isActive);
+                button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                button.setAttribute('tabindex', isActive ? '0' : '-1');
+            });
+            customPanels.forEach(panel => {
+                panel.classList.toggle('is-open', panel.getAttribute(TAB_ATTR) === state.activeId);
+            });
             return;
         }
-
-        customButtons.forEach(button => setTabState(button, false));
-        customPanels.forEach(panel => setPaneState(panel, false));
-
-        const nativeTabToRestore = nativeTabs.find(button => button.id === state.lastNativeTabId) || context.activeNativeTab || nativeTabs[0];
-        const nativePaneToRestore = nativeTabToRestore?.getAttribute('aria-controls')
-            ? document.getElementById(nativeTabToRestore.getAttribute('aria-controls'))
-            : nativePanes.find(pane => pane.id === state.lastNativePaneId) || context.activeNativePane || nativePanes[0];
-
-        nativeTabs.forEach(button => setTabState(button, button === nativeTabToRestore));
-        nativePanes.forEach(pane => setPaneState(pane, pane === nativePaneToRestore));
+        if (context.railContent) context.railContent.removeAttribute(MODE_ATTR);
+        if (context.tabsWrapper) context.tabsWrapper.removeAttribute(ACTIVE_TAB_ATTR);
+        customButtons.forEach(button => {
+            button.classList.remove('active', 'open-rail');
+            button.setAttribute('aria-selected', 'false');
+            button.setAttribute('tabindex', '-1');
+        });
+        customPanels.forEach(panel => {
+            panel.classList.remove('is-open');
+        });
     }
 
     async function sync() {
         const context = await ensureSidebarOpen();
-        if (!context.tabsWrapper || !context.tabContent) return;
+        if (!context.tabsWrapper || !context.tabContent || !context.railContent) return;
+
         bindNativeTabHandlers(context);
+        const panelContainer = ensurePanelContainer(context.railContent);
+        if (!panelContainer) return;
+
         const buttons = syncTabs(context);
-        const panels = syncPanels(context);
+        const panels = syncPanels(panelContainer);
 
         const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
         if (activePanel) {
-            const activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId)
-                || ensureCustomPanel(context, activePanel);
+            const activePanelElement = panels.find(p => p.getAttribute(TAB_ATTR) === state.activeId)
+                || ensureCustomPanel(panelContainer, activePanel);
             if (shouldRenderPanel(activePanelElement, activePanel)) {
-                renderPanelContent(context, activePanel);
+                renderPanelContent(panelContainer, activePanel);
             }
         }
 
         updateSelectionState(context, buttons, panels);
-        const activeCustomPanel = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || context.activeNativePane;
-        applyTheme(context, activeCustomPanel || document.documentElement, buttons);
+        applyTheme(context, panelContainer, buttons);
     }
 
     function scheduleSync(delay = 0) {
@@ -614,7 +661,6 @@
 
     function openPanel(panelId) {
         if (!state.panels.has(panelId)) return;
-        rememberNativeSelection(resolveContext());
         state.activeId = panelId;
         state.isOpen = true;
         persistState();
