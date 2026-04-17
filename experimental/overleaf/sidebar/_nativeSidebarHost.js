@@ -19,6 +19,7 @@
 
     const state = {
         panels: new Map(),
+        renderVersions: new Map(),
         activeId: localStorage.getItem(ACTIVE_KEY) || null,
         isOpen: localStorage.getItem(OPEN_KEY) === '1',
         footerText: '',
@@ -55,6 +56,10 @@
     function getProjectId() {
         const match = global.location.pathname.match(/\/project\/([^/]+)/);
         return match ? match[1] : null;
+    }
+
+    function getCurrentProjectIdOrEmpty() {
+        return getProjectId() || '';
     }
 
     function getProjectName() {
@@ -485,7 +490,19 @@
         state.footerText = '';
         panelDefinition.render(body, getPanelApi(panelDefinition.id));
         footer.textContent = state.footerText;
+        panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectIdOrEmpty();
+        panelRoot.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         panelRoot.classList.add('is-open');
+    }
+
+    function shouldRenderPanel(panelRoot, panelDefinition) {
+        if (!panelRoot) return true;
+        const currentProjectId = getCurrentProjectIdOrEmpty();
+        if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== currentProjectId) return true;
+        const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
+        if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== currentRenderVersion) return true;
+        const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
+        return !body || !body.hasChildNodes();
     }
 
     async function ensureSidebarOpen() {
@@ -575,7 +592,13 @@
         const panels = syncPanels(context);
 
         const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
-        if (activePanel) renderPanelContent(context, activePanel);
+        if (activePanel) {
+            const activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId)
+                || ensureCustomPanel(context, activePanel);
+            if (shouldRenderPanel(activePanelElement, activePanel)) {
+                renderPanelContent(context, activePanel);
+            }
+        }
 
         updateSelectionState(context, buttons, panels);
         const activeCustomPanel = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || context.activeNativePane;
@@ -605,6 +628,9 @@
     }
 
     function rerenderPanel(panelId) {
+        if (panelId) {
+            state.renderVersions.set(panelId, (state.renderVersions.get(panelId) || 0) + 1);
+        }
         scheduleSync(0);
     }
 
@@ -617,6 +643,7 @@
             throw new Error('Experimental native sidebar panels require an id and render function.');
         }
         state.panels.set(panel.id, panel);
+        if (!state.renderVersions.has(panel.id)) state.renderVersions.set(panel.id, 0);
         if (!state.activeId) state.activeId = panel.id;
         persistState();
         scheduleSync(0);
