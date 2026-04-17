@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf ZIP Download with Date
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.3.1
 // @description  Add custom-named PDF and ZIP downloads to Overleaf with timestamped filenames and status feedback
 // @author       You
 // @match        https://*.overleaf.com/*
