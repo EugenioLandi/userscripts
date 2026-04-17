@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      3.1
 // @description  Track Overleaf compile durations with a live timer and last-compile summary badge
-// @match        https://www.overleaf.com/project/*
+// @match        https://*.overleaf.com/project/*
 // @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Compile%20Timer%20%28Experimental%29
 // @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Compile%20Timer%20%28Experimental%29
 // @grant        none
