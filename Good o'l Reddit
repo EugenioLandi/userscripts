@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         Good o'l Reddit
 // @description  Redirect supported Reddit web hosts to old.reddit.com while allowing an explicit session bypass.
-// @version      1.2
+// @version      1.3
 // @match        *://*.reddit.com/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Good%20o%27l%20Reddit
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Good%20o%27l%20Reddit
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==

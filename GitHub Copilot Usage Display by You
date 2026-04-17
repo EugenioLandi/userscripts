@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.4
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/features/copilot*
+// @match        https://github.com/settings/copilot*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -18,9 +22,10 @@
     const SETTINGS_URL = 'https://github.com/settings/copilot/features';
     const REFRESH_INTERVAL = 5 * 60 * 1000;
     const DISPLAY_ID = 'copilot-usage-display';
+    const DISPLAY_HOST_ID = 'copilot-usage-display-host';
 
     let refreshTimer = null;
-    let routeKey = location.pathname;
+    let routeKey = `${location.pathname}${location.search}${location.hash}`;
 
     function normalizeWhitespace(text) {
         return String(text || '').replace(/\s+/g, ' ').trim();
@@ -32,12 +37,19 @@
         return Math.max(0, Math.min(100, Math.round(numeric)));
     }
 
+    function parseCount(value) {
+        const numeric = Number(String(value || '').replace(/[^\d.]/g, ''));
+        return Number.isFinite(numeric) ? numeric : null;
+    }
+
     function findPercentageInScripts(html) {
         const patterns = [
             /"usagePercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"percentUsed"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"premiumRequestsUsedPercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"quotaPercent"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"usedPercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"usagePercent(?:age)?"\s*:\s*(\d+(?:\.\d+)?)/i,
         ];
 
         for (const pattern of patterns) {
@@ -75,6 +87,26 @@
         return best ? clampPercentage(best.value) : null;
     }
 
+    function findPercentageFromFractions(text) {
+        const normalized = normalizeWhitespace(text);
+        const patterns = [
+            /(\d[\d,]*)\s*(?:of|\/)\s*(\d[\d,]*)\s+premium requests?/i,
+            /premium requests?.{0,80}?(\d[\d,]*)\s*(?:of|\/)\s*(\d[\d,]*)/i,
+            /(\d[\d,]*)\s+used\s+of\s+(\d[\d,]*)\s+premium requests?/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = normalized.match(pattern);
+            if (!match) continue;
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (!used || !total) continue;
+            return clampPercentage((used / total) * 100);
+        }
+
+        return null;
+    }
+
     function findPercentageInProgressBars(doc) {
         const candidates = [...doc.querySelectorAll('[role="progressbar"][aria-valuenow]')];
         for (const el of candidates) {
@@ -86,7 +118,14 @@
         return null;
     }
 
-    async function fetchUsagePercentage() {
+    function requiresSignIn(doc) {
+        return Boolean(
+            doc.querySelector('form[action="/session"]') ||
+            /sign in to github/i.test(doc.body?.textContent || '')
+        );
+    }
+
+    async function fetchUsageState() {
         const response = await fetch(SETTINGS_URL, { credentials: 'include' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
@@ -94,12 +133,17 @@
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
-
-        return (
+        const percentage = (
             findPercentageInProgressBars(doc) ??
             findPercentageInScripts(html) ??
+            findPercentageFromFractions(doc.body.textContent) ??
             findPercentageInText(doc.body.textContent)
         );
+
+        return {
+            percentage,
+            requiresSignIn: percentage === null && requiresSignIn(doc),
+        };
     }
 
     function getDisplayTheme(percentage) {
@@ -124,6 +168,10 @@
         };
     }
 
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && element.getClientRects().length > 0);
+    }
+
     function ensureDisplay() {
         let container = document.getElementById(DISPLAY_ID);
         if (container) return container;
@@ -134,44 +182,83 @@
         container.style.cssText = [
             'display:inline-flex',
             'align-items:center',
-            'gap:8px',
-            'padding:6px 10px',
+            'padding:8px 12px',
             'margin-left:8px',
-            'border-radius:999px',
+            'height:32px',
+            'border-radius:6px',
             'border:1px solid var(--color-border-default, #d0d7de)',
             'background:var(--color-canvas-subtle, #f6f8fa)',
-            'font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif',
+            'font:500 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif',
             'cursor:pointer',
             'white-space:nowrap',
+            'user-select:none',
+            'transition:background-color 0.2s',
         ].join(';');
 
-        container.innerHTML = '<span data-role="label">Premium usage</span><span data-role="value">Loading…</span>';
+        container.innerHTML = '<span data-role="value">Loading…</span>';
         container.title = 'Click to refresh';
         container.addEventListener('click', () => updateUsage(true));
+        container.addEventListener('mouseenter', () => {
+            container.dataset.preHoverBackground = container.style.background;
+            container.style.background = 'var(--color-neutral-muted, #eaeef2)';
+        });
+        container.addEventListener('mouseleave', () => {
+            container.style.background = container.dataset.preHoverBackground || 'var(--color-canvas-subtle, #f6f8fa)';
+        });
         return container;
     }
 
+    function ensureDisplayHost(target, mode = 'append') {
+        let host = document.getElementById(DISPLAY_HOST_ID);
+        if (!host) {
+            host = document.createElement('div');
+            host.id = DISPLAY_HOST_ID;
+            host.style.cssText = 'display:inline-flex;align-items:center;';
+        }
+
+        if (target && (mode === 'after' ? host.previousElementSibling !== target : host.parentElement !== target)) {
+            if (mode === 'after') {
+                target.insertAdjacentElement('afterend', host);
+            } else {
+                target.appendChild(host);
+            }
+        }
+
+        return host;
+    }
+
     function findInsertionPoint() {
-        return (
-            document.querySelector('[data-testid="copilot-subpage-nav"]') ||
-            document.querySelector('main h1')?.parentElement ||
-            document.querySelector('header nav') ||
-            document.querySelector('header')
-        );
+        const selectors = [
+            { selector: '[data-testid="copilot-subpage-nav"]', mode: 'append' },
+            { selector: '[data-testid*="copilot-subpage-nav"]', mode: 'append' },
+            { selector: '[data-testid*="page-header-actions"]', mode: 'append' },
+            { selector: 'header nav', mode: 'append' },
+            { selector: '.UnderlineNav', mode: 'append' },
+            { selector: 'main h1', mode: 'after' },
+            { selector: 'main h2', mode: 'after' },
+            { selector: '[role="main"] h1', mode: 'after' },
+            { selector: '[role="main"] h2', mode: 'after' },
+            { selector: 'header', mode: 'append' },
+            { selector: 'main', mode: 'append' },
+            { selector: '[role="main"]', mode: 'append' },
+        ];
+
+        for (const { selector, mode } of selectors) {
+            const candidate = document.querySelector(selector);
+            if (!isVisible(candidate)) continue;
+            return { element: candidate, mode };
+        }
+
+        return { element: document.body, mode: 'append' };
     }
 
     function mountDisplay() {
+        if (!document.body) return;
         const insertionPoint = findInsertionPoint();
-        if (!insertionPoint) return;
+        const host = ensureDisplayHost(insertionPoint.element, insertionPoint.mode);
         const display = ensureDisplay();
-        if (!display.isConnected) {
-            if (getComputedStyle(insertionPoint).display === 'block') {
-                insertionPoint.style.display = 'flex';
-                insertionPoint.style.alignItems = 'center';
-                insertionPoint.style.flexWrap = 'wrap';
-                insertionPoint.style.gap = '8px';
-            }
-            insertionPoint.appendChild(display);
+        if (display.parentElement !== host) {
+            host.appendChild(display);
         }
     }
 
@@ -197,9 +284,12 @@
         setDisplayState('Refreshing…');
 
         try {
-            const percentage = await fetchUsagePercentage();
+            const { percentage, requiresSignIn: signInRequired } = await fetchUsageState();
             if (percentage === null) {
-                setDisplayState('Unavailable', null, 'Usage percentage not found. Click to retry.');
+                const title = signInRequired
+                    ? 'GitHub sign-in is required to read Copilot usage. Click to retry.'
+                    : 'Usage percentage not found on the Copilot settings page. Click to retry.';
+                setDisplayState('Unavailable', null, title);
                 return;
             }
 
@@ -215,8 +305,9 @@
 
     function watchRouteChanges() {
         const observer = new MutationObserver(() => {
-            if (routeKey !== location.pathname) {
-                routeKey = location.pathname;
+            const currentRouteKey = `${location.pathname}${location.search}${location.hash}`;
+            if (routeKey !== currentRouteKey) {
+                routeKey = currentRouteKey;
                 mountDisplay();
                 updateUsage(true);
             } else {

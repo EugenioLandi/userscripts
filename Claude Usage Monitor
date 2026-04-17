@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Claude Usage Monitor
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Floating widget showing 5h and 7d Claude usage with manual refresh and persistent position
 // @author       You
 // @match        https://claude.ai/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Claude%20Usage%20Monitor
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Claude%20Usage%20Monitor
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==

@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         GitHub Copilot Model Multipliers
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.4
 // @description  Display premium request multipliers next to Copilot models with improved parsing, caching, and selection badges
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/features/copilot*
+// @match        https://github.com/settings/copilot*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      docs.github.com
@@ -17,10 +21,41 @@
     window.__copilotModelMultipliersInitialized = true;
 
     const DOCS_URL = 'https://docs.github.com/en/copilot/concepts/billing/copilot-requests';
+    const DOCS_TABLE_URL = `${DOCS_URL}#model-multipliers`;
     const CACHE_KEY = 'copilot_model_multipliers_v5';
     const CACHE_TTL = 24 * 60 * 60 * 1000;
+    const MAX_DECORATABLE_TEXT_LENGTH = 200;
+    const ALL_BADGE_SELECTOR = '[data-cm-badge], [data-cm-current-badge]';
     // Refresh live data sooner than full expiry so the UI can serve cached values while updating in the background.
     const CACHE_REFRESH_AFTER = 6 * 60 * 60 * 1000;
+    const DROPDOWN_MODEL_SELECTORS = [
+        '.prc-ActionList-ItemLabel-81ohH',
+        '.ActionListItem-label',
+        '.ActionList-content',
+        '[role="menuitem"]',
+        '[role="option"]',
+        'button[role="menuitem"]',
+        'div[role="menuitem"]',
+        'summary',
+        'button[aria-haspopup="menu"]',
+        'button[aria-haspopup="dialog"]',
+        '[data-testid*="model"]',
+        '[data-testid*="model-selector"] *',
+        '[data-testid*="agent"]',
+        '[aria-label*="model" i]',
+        '[title*="model" i]',
+        '[role="tab"]',
+    ];
+    const CURRENT_MODEL_SELECTORS = [
+        'button[aria-haspopup="true"]',
+        '[data-testid*="model"] button',
+        '[data-testid*="model-selector"]',
+        '[data-testid*="model-picker"]',
+        '[data-testid*="agent-model"]',
+        '[data-testid*="agent"] button',
+        '[aria-haspopup="menu"]',
+        'summary',
+    ];
 
     const FALLBACK_MULTIPLIERS = {
         'claude haiku 4.5': 0.33,
@@ -62,6 +97,29 @@
 
     function formatMultiplier(multiplier) {
         return typeof multiplier === 'number' && !Number.isNaN(multiplier) ? `(${multiplier}×)` : '';
+    }
+
+    function formatTimestamp(timestamp) {
+        return new Date(timestamp).toLocaleString();
+    }
+
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && (element.offsetParent || element.getClientRects().length));
+    }
+
+    function cleanCandidateText(text) {
+        return String(text || '')
+            .replace(/\s*\(.+?×\)\s*/g, ' ')
+            .replace(/\b(selected|default|preview|included|premium|requests?)\b/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function looksLikeModelText(text) {
+        const name = normalize(text);
+        if (!name) return false;
+        if (Object.keys(modelMultipliers).some(key => name.includes(key) || key.includes(name))) return true;
+        return /\b(claude|gemini|gpt|grok|raptor|sonnet|opus|haiku|codex|o1|o3|o4)\b/.test(name);
     }
 
     function loadCache() {
@@ -189,17 +247,25 @@
     }
 
     function extractModelName(element) {
-        const texts = [...element.querySelectorAll('span, div')]
-            .map(node => node.textContent.trim())
-            .filter(text => text && !/^\(.+×\)$/.test(text));
+        const texts = [
+            element.getAttribute('aria-label'),
+            element.getAttribute('title'),
+            element.textContent,
+            ...[...element.querySelectorAll('span, div, strong')].map(node => node.textContent),
+        ]
+            .map(cleanCandidateText)
+            .filter(text => text && !/^\(.+×\)$/.test(text) && !/^models?$/i.test(text));
 
-        const best = texts.sort((a, b) => b.length - a.length)[0] || element.textContent.trim();
-        return best.replace(/\s*\(.+×\)\s*$/g, '').trim();
+        const ranked = texts.sort((a, b) => b.length - a.length);
+        return ranked.find(text => getMultiplier(text) !== null) || ranked.find(looksLikeModelText) || '';
     }
 
     function badgeTitle() {
-        const time = new Date(metadata.timestamp).toLocaleString();
-        return `Multiplier source: ${metadata.source}. Last update: ${time}.`;
+        return `Multiplier source: ${metadata.source}. Last update: ${formatTimestamp(metadata.timestamp)}.`;
+    }
+
+    function modelsLabelTitle() {
+        return `Model multipliers last updated by the script: ${formatTimestamp(metadata.timestamp)}. Source: ${metadata.source}.`;
     }
 
     function ensureBadge(element, attributeName) {
@@ -214,45 +280,123 @@
         return badge;
     }
 
-    function decorateElements(selectors, attributeName) {
+    function isInteractiveElement(element) {
+        return Boolean(element && (
+            /^(A|BUTTON|SUMMARY)$/.test(element.tagName) ||
+            ['button', 'link', 'menuitem', 'option', 'tab'].includes(element.getAttribute('role'))
+        ));
+    }
+
+    function openDocsTable(event) {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        window.open(DOCS_TABLE_URL, '_blank', 'noopener noreferrer');
+    }
+
+    function ensureModelsDocsLink(element) {
+        if (!element) return;
+        element.title = modelsLabelTitle();
+
+        if (element.tagName === 'A') {
+            element.href = DOCS_TABLE_URL;
+            element.target = '_blank';
+            element.rel = 'noopener noreferrer';
+            return;
+        }
+
+        if (element.dataset.cmDocsLinkAttached === 'true') return;
+
+        element.dataset.cmDocsLinkAttached = 'true';
+        element.style.cursor = 'pointer';
+        element.style.textDecoration = 'underline';
+        element.style.textUnderlineOffset = '2px';
+        element.addEventListener('click', openDocsTable);
+        element.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') openDocsTable(event);
+        });
+        if (!isInteractiveElement(element)) {
+            element.tabIndex = 0;
+            element.setAttribute('role', 'link');
+        }
+    }
+
+    function collectDecoratableElements(selectors, skipSelectors = []) {
         const seen = new Set();
+        const result = [];
+        const skipQuery = skipSelectors.length ? skipSelectors.join(', ') : '';
         for (const selector of selectors) {
             for (const element of document.querySelectorAll(selector)) {
-                if (seen.has(element)) continue;
+                if (seen.has(element) || !isVisible(element)) continue;
+                if (skipQuery && (element.matches(skipQuery) || element.closest(skipQuery))) continue;
+                if ((element.textContent || '').trim().length > MAX_DECORATABLE_TEXT_LENGTH && !isInteractiveElement(element)) continue;
                 seen.add(element);
+                result.push(element);
+            }
+        }
+        return result;
+    }
 
-                const modelName = extractModelName(element);
-                const multiplier = getMultiplier(modelName);
-                const badge = element.querySelector(`span[${attributeName}]`);
+    function decorateElements(selectors, attributeName, skipSelectors = []) {
+        for (const element of collectDecoratableElements(selectors, skipSelectors)) {
+            const modelName = extractModelName(element);
+            if (!looksLikeModelText(modelName)) continue;
 
-                if (multiplier === null) {
-                    badge?.remove();
-                    continue;
-                }
+            const multiplier = getMultiplier(modelName);
+            const badge = element.querySelector(`span[${attributeName}]`);
 
-                const text = formatMultiplier(multiplier);
-                if (!text) continue;
-                ensureBadge(element, attributeName).textContent = ` ${text}`;
+            if (multiplier === null) {
+                badge?.remove();
+                continue;
+            }
+
+            const text = formatMultiplier(multiplier);
+            if (!text) continue;
+            element.title = badgeTitle();
+            ensureBadge(element, attributeName).textContent = ` ${text}`;
+        }
+    }
+
+    function dedupeManagedBadges() {
+        const parents = new Set(
+            [...document.querySelectorAll(ALL_BADGE_SELECTOR)]
+                .map(badge => badge.parentElement)
+                .filter(Boolean)
+        );
+
+        for (const element of parents) {
+            const badges = [...element.querySelectorAll(`:scope > ${ALL_BADGE_SELECTOR}`)];
+            if (badges.length < 2) continue;
+            const currentBadge = element.querySelector(':scope > [data-cm-current-badge]') || badges[0];
+            for (const badge of badges) {
+                if (badge !== currentBadge) badge.remove();
             }
         }
     }
 
     function decoratePage() {
-        decorateElements([
-            '.prc-ActionList-ItemLabel-81ohH',
-            '.ActionListItem-label',
-            '.ActionList-content',
-            '[role="menuitem"]',
-            '[role="option"]',
-            'button[role="menuitem"]',
-            'div[role="menuitem"]',
-        ], 'data-cm-badge');
+        decorateElements(DROPDOWN_MODEL_SELECTORS, 'data-cm-badge', CURRENT_MODEL_SELECTORS);
+        decorateElements(CURRENT_MODEL_SELECTORS, 'data-cm-current-badge');
+        dedupeManagedBadges();
 
-        decorateElements([
-            'button[aria-haspopup="true"]',
-            '[data-testid*="model"] button',
+        const labelSelectors = [
+            '[data-testid*="model"]',
             '[data-testid*="model-selector"]',
-        ], 'data-cm-current-badge');
+            '[data-testid*="model-picker"]',
+            '[aria-label="Models"]',
+            '[aria-label*="models" i]',
+            '[data-testid*="agent"] [aria-label]',
+            'main summary',
+            'main label',
+            'h1, h2, h3, h4, h5, h6',
+            'div',
+            'span',
+        ];
+
+        for (const element of collectDecoratableElements(labelSelectors)) {
+            const labelText = normalize(element.textContent || element.getAttribute('aria-label'));
+            if (labelText !== 'models') continue;
+            ensureModelsDocsLink(element);
+        }
     }
 
     async function init() {

@@ -3,8 +3,10 @@
 // @namespace    CrabbyBlueberry
 // @include      https://*.m.wikipedia.org/*
 // @include      http://*.m.wikipedia.org/*
-// @version      2.0
+// @version      2.1
 // @description  Redirect mobile Wikipedia pages to the desktop site while allowing an explicit session bypass.
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Wikipedia%20Mobile%20to%20Desktop%20redirect
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Wikipedia%20Mobile%20to%20Desktop%20redirect
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
