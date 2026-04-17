@@ -94,7 +94,9 @@
         textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+        if (typeof document.execCommand === 'function' && document.queryCommandSupported?.('copy') !== false) {
+            document.execCommand('copy');
+        }
         textarea.remove();
     }
 
@@ -611,6 +613,10 @@
         scheduleSync(0);
     }
 
+    function isPanelActive(panelId) {
+        return state.isOpen && state.activeId === panelId;
+    }
+
     function registerPanel(panel) {
         if (!panel?.id || typeof panel.render !== 'function') {
             throw new Error('Experimental native sidebar panels require an id and render function.');
@@ -650,6 +656,7 @@
         readJson,
         writeJson,
         formatDateTime,
+        isPanelActive,
         scheduleSync,
     };
 })(window);

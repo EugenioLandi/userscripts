@@ -135,7 +135,9 @@
 
     const tracker = ensureTracker();
     tracker.subscribe(() => host.rerenderPanel(PANEL_ID));
-    window.setInterval(() => host.rerenderPanel(PANEL_ID), 1000);
+    window.setInterval(() => {
+        if (host.isPanelActive(PANEL_ID)) host.rerenderPanel(PANEL_ID);
+    }, 1000);
 
     function formatSeconds(duration) {
         return `${(duration / 1000).toFixed(2)}s`;
