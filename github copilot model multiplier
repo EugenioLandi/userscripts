@@ -275,7 +275,19 @@
             'summary',
         ], 'data-cm-current-badge');
 
-        for (const element of document.querySelectorAll('button, span, div, summary, h1, h2, h3, label')) {
+        const labelSelectors = [
+            '[data-testid*="model"]',
+            '[data-testid*="model-selector"]',
+            '[data-testid*="model-picker"]',
+            '[aria-label="Models"]',
+            'main summary',
+            'main label',
+            'main h1',
+            'main h2',
+            'main h3',
+        ];
+
+        for (const element of document.querySelectorAll(labelSelectors.join(', '))) {
             if (normalize(element.textContent) !== 'models') continue;
             element.title = modelsLabelTitle();
         }
