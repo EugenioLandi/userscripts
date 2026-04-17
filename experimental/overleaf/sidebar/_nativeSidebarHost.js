@@ -146,6 +146,10 @@
             : [];
     }
 
+    function getActiveNativeTab(tabsWrapper) {
+        return getNativeTabs(tabsWrapper).find(button => button.getAttribute('aria-selected') === 'true') || null;
+    }
+
     function resolveContext() {
         const tabsWrapper = document.querySelector(NATIVE_TABS_WRAPPER_SELECTOR);
         const fileTreeButton = tabsWrapper?.querySelector(NATIVE_FILE_TREE_TAB_SELECTOR) || null;
@@ -490,7 +494,7 @@
 
         const fileTreeButton = context.fileTreeButton;
         const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
-        const activeNativeTab = context.tabsWrapper?.querySelector(`[role="tab"][aria-selected="true"]:not([${TAB_ATTR}])`);
+        const activeNativeTab = getActiveNativeTab(context.tabsWrapper);
         const activeStyles = activeNativeTab ? getComputedStyle(activeNativeTab) : null;
 
         customButtons.forEach(button => {
@@ -588,8 +592,13 @@
     }
 
     function isSidebarClosed(context) {
-        const label = context.sidebarToggleButton?.getAttribute('aria-label') || '';
-        return !context.tabContent || /show the panel/i.test(label) || context.sidebarToggleButton?.classList.contains('custom-toggler-closed');
+        const toggle = context.sidebarToggleButton;
+        if (!toggle) return !context.tabContent;
+        if (toggle.classList.contains('custom-toggler-closed')) return true;
+        if (toggle.classList.contains('custom-toggler-open')) return !context.tabContent;
+        if (toggle.getAttribute('aria-expanded') === 'false') return true;
+        const label = toggle.getAttribute('aria-label') || '';
+        return !context.tabContent || /show the panel/i.test(label);
     }
 
     async function ensureSidebarOpen() {
@@ -611,7 +620,7 @@
         }
         if (!isSidebarClosed(context)) return context;
 
-        const activeNativeTab = context.tabsWrapper?.querySelector(`[role="tab"][aria-selected="true"]:not([${TAB_ATTR}])`);
+        const activeNativeTab = getActiveNativeTab(context.tabsWrapper);
         if (activeNativeTab && isVisible(activeNativeTab)) {
             activeNativeTab.click();
             await wait(SIDEBAR_OPEN_DELAY_MS);
