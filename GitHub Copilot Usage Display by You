@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/features/copilot*
 // @match        https://github.com/settings/copilot*
 // @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
 // @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
@@ -24,7 +25,7 @@
     const DISPLAY_HOST_ID = 'copilot-usage-display-host';
 
     let refreshTimer = null;
-    let routeKey = location.pathname;
+    let routeKey = `${location.pathname}${location.search}`;
 
     function normalizeWhitespace(text) {
         return String(text || '').replace(/\s+/g, ' ').trim();
@@ -36,12 +37,19 @@
         return Math.max(0, Math.min(100, Math.round(numeric)));
     }
 
+    function parseCount(value) {
+        const numeric = Number(String(value || '').replace(/[^\d.]/g, ''));
+        return Number.isFinite(numeric) ? numeric : null;
+    }
+
     function findPercentageInScripts(html) {
         const patterns = [
             /"usagePercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"percentUsed"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"premiumRequestsUsedPercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
             /"quotaPercent"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"usedPercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"usagePercent(?:age)?"\s*:\s*(\d+(?:\.\d+)?)/i,
         ];
 
         for (const pattern of patterns) {
@@ -79,6 +87,26 @@
         return best ? clampPercentage(best.value) : null;
     }
 
+    function findPercentageFromFractions(text) {
+        const normalized = normalizeWhitespace(text);
+        const patterns = [
+            /(\d[\d,]*)\s*(?:of|\/)\s*(\d[\d,]*)\s+premium requests?/i,
+            /premium requests?.{0,80}?(\d[\d,]*)\s*(?:of|\/)\s*(\d[\d,]*)/i,
+            /(\d[\d,]*)\s+used\s+of\s+(\d[\d,]*)\s+premium requests?/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = normalized.match(pattern);
+            if (!match) continue;
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (!used || !total) continue;
+            return clampPercentage((used / total) * 100);
+        }
+
+        return null;
+    }
+
     function findPercentageInProgressBars(doc) {
         const candidates = [...doc.querySelectorAll('[role="progressbar"][aria-valuenow]')];
         for (const el of candidates) {
@@ -102,6 +130,7 @@
         return (
             findPercentageInProgressBars(doc) ??
             findPercentageInScripts(html) ??
+            findPercentageFromFractions(doc.body.textContent) ??
             findPercentageInText(doc.body.textContent)
         );
     }
@@ -159,58 +188,36 @@
         return container;
     }
 
-    function ensureDisplayHost(parent) {
+    function ensureDisplayHost() {
         let host = document.getElementById(DISPLAY_HOST_ID);
         if (!host) {
             host = document.createElement('div');
             host.id = DISPLAY_HOST_ID;
-            host.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;';
-        }
-
-        if (host.parentElement !== parent) {
-            if (parent.matches('main, [role="main"]')) {
-                parent.prepend(host);
-            } else {
-                parent.appendChild(host);
-            }
+            host.style.cssText = [
+                'position:fixed',
+                'top:16px',
+                'right:16px',
+                'z-index:2147483647',
+                'display:flex',
+                'align-items:center',
+                'justify-content:flex-end',
+                'pointer-events:none',
+            ].join(';');
+            document.body.appendChild(host);
         }
 
         return host;
     }
 
-    function findInsertionPoint() {
-        const selectors = [
-            '[data-testid="copilot-subpage-nav"]',
-            '[data-testid*="copilot-subpage-nav"]',
-            '[data-testid*="page-header-actions"]',
-            'main h1',
-            'main h2',
-            '[role="main"] h1',
-            '[role="main"] h2',
-            'header nav',
-            'header',
-            'main',
-            '[role="main"]',
-        ];
-
-        for (const selector of selectors) {
-            const candidate = document.querySelector(selector);
-            if (!candidate || !isVisible(candidate)) continue;
-            if (/^h[1-6]$/i.test(candidate.tagName)) return candidate.parentElement || candidate;
-            return candidate;
-        }
-
-        return null;
-    }
-
     function mountDisplay() {
-        const insertionPoint = findInsertionPoint();
-        if (!insertionPoint) return;
-        const host = ensureDisplayHost(insertionPoint);
+        if (!document.body) return;
+        const host = ensureDisplayHost();
         const display = ensureDisplay();
         if (display.parentElement !== host) {
             host.appendChild(display);
         }
+        display.style.pointerEvents = 'auto';
+        display.style.boxShadow = '0 8px 24px rgba(31, 35, 40, 0.12)';
     }
 
     function setDisplayState(text, percentage = null, title = 'Click to refresh') {
@@ -237,7 +244,7 @@
         try {
             const percentage = await fetchUsagePercentage();
             if (percentage === null) {
-                setDisplayState('Unavailable', null, 'Usage percentage not found. Click to retry.');
+                setDisplayState('Unavailable', null, 'Usage percentage not found or you are not signed in. Click to retry.');
                 return;
             }
 
@@ -253,8 +260,9 @@
 
     function watchRouteChanges() {
         const observer = new MutationObserver(() => {
-            if (routeKey !== location.pathname) {
-                routeKey = location.pathname;
+            const currentRouteKey = `${location.pathname}${location.search}`;
+            if (routeKey !== currentRouteKey) {
+                routeKey = currentRouteKey;
                 mountDisplay();
                 updateUsage(true);
             } else {

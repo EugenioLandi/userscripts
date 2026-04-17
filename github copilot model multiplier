@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         GitHub Copilot Model Multipliers
 // @namespace    http://tampermonkey.net/
-// @version      5.2
+// @version      5.3
 // @description  Display premium request multipliers next to Copilot models with improved parsing, caching, and selection badges
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/features/copilot*
 // @match        https://github.com/settings/copilot*
 // @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
 // @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
@@ -20,6 +21,7 @@
     window.__copilotModelMultipliersInitialized = true;
 
     const DOCS_URL = 'https://docs.github.com/en/copilot/concepts/billing/copilot-requests';
+    const DOCS_TABLE_URL = `${DOCS_URL}#model-multipliers`;
     const CACHE_KEY = 'copilot_model_multipliers_v5';
     const CACHE_TTL = 24 * 60 * 60 * 1000;
     // Refresh live data sooner than full expiry so the UI can serve cached values while updating in the background.
@@ -69,6 +71,25 @@
 
     function formatTimestamp(timestamp = metadata.timestamp) {
         return new Date(timestamp).toLocaleString();
+    }
+
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && (element.offsetParent || element.getClientRects().length));
+    }
+
+    function cleanCandidateText(text) {
+        return String(text || '')
+            .replace(/\s*\(.+?×\)\s*/g, ' ')
+            .replace(/\b(selected|default|preview|included|premium|requests?)\b/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function looksLikeModelText(text) {
+        const name = normalize(text);
+        if (!name) return false;
+        if (Object.keys(modelMultipliers).some(key => name.includes(key) || key.includes(name))) return true;
+        return /\b(claude|gemini|gpt|grok|raptor|sonnet|opus|haiku|codex|o1|o3|o4)\b/.test(name);
     }
 
     function loadCache() {
@@ -202,11 +223,11 @@
             element.textContent,
             ...[...element.querySelectorAll('span, div, strong')].map(node => node.textContent),
         ]
-            .map(text => String(text || '').trim())
+            .map(cleanCandidateText)
             .filter(text => text && !/^\(.+×\)$/.test(text) && !/^models?$/i.test(text));
 
-        const best = texts.sort((a, b) => b.length - a.length)[0] || element.textContent.trim();
-        return best.replace(/\s*\(.+×\)\s*$/g, '').trim();
+        const ranked = texts.sort((a, b) => b.length - a.length);
+        return ranked.find(text => getMultiplier(text) !== null) || ranked.find(looksLikeModelText) || '';
     }
 
     function badgeTitle() {
@@ -229,26 +250,75 @@
         return badge;
     }
 
-    function decorateElements(selectors, attributeName) {
+    function isInteractiveElement(element) {
+        return Boolean(element && (
+            /^(A|BUTTON|SUMMARY)$/.test(element.tagName) ||
+            ['button', 'link', 'menuitem', 'option', 'tab'].includes(element.getAttribute('role'))
+        ));
+    }
+
+    function ensureModelsDocsLink(element) {
+        if (!element || !element.parentElement) return;
+        element.title = modelsLabelTitle();
+
+        if (element.tagName === 'A') {
+            element.href = DOCS_TABLE_URL;
+            element.target = '_blank';
+            element.rel = 'noopener noreferrer';
+            return;
+        }
+
+        let link = element.parentElement.querySelector('a[data-cm-docs-link]');
+        if (!link) {
+            link = document.createElement('a');
+            link.dataset.cmDocsLink = 'true';
+            link.href = DOCS_TABLE_URL;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'table';
+            link.style.cssText = 'margin-left:6px;color:#0969da;font-size:.9em;font-weight:500;text-decoration:none;white-space:nowrap;';
+            link.title = 'Open the GitHub Copilot model multipliers table';
+            if (isInteractiveElement(element)) {
+                element.insertAdjacentElement('afterend', link);
+            } else {
+                element.appendChild(document.createTextNode(' '));
+                element.appendChild(link);
+            }
+        }
+    }
+
+    function collectDecoratableElements(selectors) {
         const seen = new Set();
+        const result = [];
         for (const selector of selectors) {
             for (const element of document.querySelectorAll(selector)) {
-                if (seen.has(element)) continue;
+                if (seen.has(element) || !isVisible(element)) continue;
+                if (element.closest('[data-cm-docs-link]')) continue;
+                if ((element.textContent || '').trim().length > 200 && !isInteractiveElement(element)) continue;
                 seen.add(element);
-
-                const modelName = extractModelName(element);
-                const multiplier = getMultiplier(modelName);
-                const badge = element.querySelector(`span[${attributeName}]`);
-
-                if (multiplier === null) {
-                    badge?.remove();
-                    continue;
-                }
-
-                const text = formatMultiplier(multiplier);
-                if (!text) continue;
-                ensureBadge(element, attributeName).textContent = ` ${text}`;
+                result.push(element);
             }
+        }
+        return result;
+    }
+
+    function decorateElements(selectors, attributeName) {
+        for (const element of collectDecoratableElements(selectors)) {
+            const modelName = extractModelName(element);
+            if (!looksLikeModelText(modelName)) continue;
+
+            const multiplier = getMultiplier(modelName);
+            const badge = element.querySelector(`span[${attributeName}]`);
+
+            if (multiplier === null) {
+                badge?.remove();
+                continue;
+            }
+
+            const text = formatMultiplier(multiplier);
+            if (!text) continue;
+            element.title = badgeTitle();
+            ensureBadge(element, attributeName).textContent = ` ${text}`;
         }
     }
 
@@ -266,6 +336,13 @@
             'button[aria-haspopup="dialog"]',
             '[data-testid*="model"]',
             '[data-testid*="model-selector"] *',
+            '[data-testid*="agent"]',
+            '[aria-label*="model" i]',
+            '[title*="model" i]',
+            'button',
+            'summary',
+            '[role="button"]',
+            '[role="tab"]',
         ], 'data-cm-badge');
 
         decorateElements([
@@ -274,6 +351,8 @@
             '[data-testid*="model-selector"]',
             '[data-testid*="model-picker"]',
             '[data-testid*="agent-model"]',
+            '[data-testid*="agent"] button',
+            '[aria-haspopup="menu"]',
             'summary',
         ], 'data-cm-current-badge');
 
@@ -282,14 +361,17 @@
             '[data-testid*="model-selector"]',
             '[data-testid*="model-picker"]',
             '[aria-label="Models"]',
+            '[aria-label*="models" i]',
+            '[data-testid*="agent"] [aria-label]',
             'main summary',
             'main label',
+            'button',
         ];
 
-        const labelCandidates = new Set(document.querySelectorAll(labelSelectors.join(', ')));
-        for (const element of labelCandidates) {
-            if (normalize(element.textContent) !== 'models') continue;
-            element.title = modelsLabelTitle();
+        for (const element of collectDecoratableElements(labelSelectors)) {
+            const labelText = normalize(element.textContent || element.getAttribute('aria-label'));
+            if (labelText !== 'models') continue;
+            ensureModelsDocsLink(element);
         }
     }
 
