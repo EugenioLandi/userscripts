@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
@@ -182,53 +182,84 @@
         container.style.cssText = [
             'display:inline-flex',
             'align-items:center',
-            'gap:8px',
-            'padding:6px 10px',
+            'padding:8px 12px',
             'margin-left:8px',
-            'border-radius:999px',
+            'height:32px',
+            'border-radius:6px',
             'border:1px solid var(--color-border-default, #d0d7de)',
             'background:var(--color-canvas-subtle, #f6f8fa)',
-            'font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif',
+            'font:500 14px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif',
             'cursor:pointer',
             'white-space:nowrap',
+            'user-select:none',
+            'transition:background-color 0.2s',
         ].join(';');
 
-        container.innerHTML = '<span data-role="label">Premium usage</span><span data-role="value">Loading…</span>';
+        container.innerHTML = '<span data-role="value">Loading…</span>';
         container.title = 'Click to refresh';
         container.addEventListener('click', () => updateUsage(true));
+        container.addEventListener('mouseenter', () => {
+            container.dataset.preHoverBackground = container.style.background;
+            container.style.background = 'var(--color-neutral-muted, #eaeef2)';
+        });
+        container.addEventListener('mouseleave', () => {
+            container.style.background = container.dataset.preHoverBackground || 'var(--color-canvas-subtle, #f6f8fa)';
+        });
         return container;
     }
 
-    function ensureDisplayHost() {
+    function ensureDisplayHost(target, mode = 'append') {
         let host = document.getElementById(DISPLAY_HOST_ID);
         if (!host) {
             host = document.createElement('div');
             host.id = DISPLAY_HOST_ID;
-            host.style.cssText = [
-                'position:fixed',
-                'top:16px',
-                'right:16px',
-                'z-index:2147483647',
-                'display:flex',
-                'align-items:center',
-                'justify-content:flex-end',
-                'pointer-events:none',
-            ].join(';');
-            document.body.appendChild(host);
+            host.style.cssText = 'display:inline-flex;align-items:center;';
+        }
+
+        if (target && (mode === 'after' ? host.previousElementSibling !== target : host.parentElement !== target)) {
+            if (mode === 'after') {
+                target.insertAdjacentElement('afterend', host);
+            } else {
+                target.appendChild(host);
+            }
         }
 
         return host;
     }
 
+    function findInsertionPoint() {
+        const selectors = [
+            { selector: '[data-testid="copilot-subpage-nav"]', mode: 'append' },
+            { selector: '[data-testid*="copilot-subpage-nav"]', mode: 'append' },
+            { selector: '[data-testid*="page-header-actions"]', mode: 'append' },
+            { selector: 'header nav', mode: 'append' },
+            { selector: '.UnderlineNav', mode: 'append' },
+            { selector: 'main h1', mode: 'after' },
+            { selector: 'main h2', mode: 'after' },
+            { selector: '[role="main"] h1', mode: 'after' },
+            { selector: '[role="main"] h2', mode: 'after' },
+            { selector: 'header', mode: 'append' },
+            { selector: 'main', mode: 'append' },
+            { selector: '[role="main"]', mode: 'append' },
+        ];
+
+        for (const { selector, mode } of selectors) {
+            const candidate = document.querySelector(selector);
+            if (!isVisible(candidate)) continue;
+            return { element: candidate, mode };
+        }
+
+        return { element: document.body, mode: 'append' };
+    }
+
     function mountDisplay() {
         if (!document.body) return;
-        const host = ensureDisplayHost();
+        const insertionPoint = findInsertionPoint();
+        const host = ensureDisplayHost(insertionPoint.element, insertionPoint.mode);
         const display = ensureDisplay();
         if (display.parentElement !== host) {
             host.appendChild(display);
         }
-        display.style.pointerEvents = 'auto';
-        display.style.boxShadow = '0 8px 24px rgba(31, 35, 40, 0.12)';
     }
 
     function setDisplayState(text, percentage = null, title = 'Click to refresh') {
