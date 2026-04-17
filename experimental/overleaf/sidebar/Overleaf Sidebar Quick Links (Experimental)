@@ -1,0 +1,59 @@
+// ==UserScript==
+// @name         Overleaf Sidebar Quick Links (Experimental)
+// @namespace    http://tampermonkey.net/
+// @version      0.2.0
+// @description  Add native-sidebar quick project links inside Overleaf
+// @match        https://*.overleaf.com/project/*
+// @require      https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/_nativeSidebarHost.js
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Quick%20Links%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Quick%20Links%20%28Experimental%29
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__experimentalOverleafSidebarQuickLinksInitialized) return;
+    window.__experimentalOverleafSidebarQuickLinksInitialized = true;
+
+    const host = window.__experimentalOverleafNativeSidebarHost;
+    host.registerPanel({
+        id: 'experimental-overleaf-sidebar-quick-links',
+        order: 20,
+        title: 'Quick links',
+        subtitle: 'Common project destinations in one place',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11 4"/><path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L13 19"/></svg>',
+        render(container, api) {
+            const intro = document.createElement('p');
+            intro.className = 'ol-native-sidebar-muted';
+            intro.textContent = 'Jump between the editor, project settings, exports, and dashboard without menu hunting.';
+            container.appendChild(intro);
+
+            const links = [
+                ['Editor', api.buildProjectUrl('')],
+                ['History', api.buildProjectUrl('/history')],
+                ['Settings', api.buildProjectUrl('/settings')],
+                ['Download ZIP', api.buildProjectUrl('/download/zip')],
+                ['Learn', `${window.location.origin}/learn`],
+                ['Dashboard', `${window.location.origin}/project`],
+            ];
+
+            const grid = document.createElement('div');
+            grid.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;';
+            links.forEach(([label, href]) => {
+                const link = document.createElement('a');
+                link.className = 'ol-native-sidebar-link-button';
+                link.href = href;
+                link.textContent = label;
+                if (label !== 'Editor' && label !== 'History' && label !== 'Settings') {
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                }
+                grid.appendChild(link);
+            });
+            container.appendChild(grid);
+            api.setFooterText(`Project: ${api.getProjectName()}`);
+        },
+    });
+})();

@@ -1,0 +1,137 @@
+// ==UserScript==
+// @name         Overleaf Wide Editor Toggle
+// @namespace    http://tampermonkey.net/
+// @version      0.1.0
+// @description  Add a persistent wide-layout toggle for Overleaf editor projects
+// @match        https://*.overleaf.com/project/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Wide%20Editor%20Toggle
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Wide%20Editor%20Toggle
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafWideEditorToggleInitialized) return;
+    window.__overleafWideEditorToggleInitialized = true;
+
+    const STORAGE_KEY = 'overleaf-wide-editor-enabled';
+    const BUTTON_ID = 'overleaf-wide-editor-toggle';
+    const STYLE_ID = 'overleaf-wide-editor-style';
+
+    function isTypingTarget(target) {
+        return Boolean(target && (target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]') || target.isContentEditable));
+    }
+
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            html[data-overleaf-wide-editor='1'] body,
+            html[data-overleaf-wide-editor='1'] main,
+            html[data-overleaf-wide-editor='1'] [role='main'],
+            html[data-overleaf-wide-editor='1'] .ide,
+            html[data-overleaf-wide-editor='1'] .ide-body,
+            html[data-overleaf-wide-editor='1'] .editor,
+            html[data-overleaf-wide-editor='1'] .editor-pane,
+            html[data-overleaf-wide-editor='1'] .pdf-pane,
+            html[data-overleaf-wide-editor='1'] .pdf-viewer,
+            html[data-overleaf-wide-editor='1'] .split-pane,
+            html[data-overleaf-wide-editor='1'] .split-pane-content {
+                max-width: none !important;
+                width: 100% !important;
+            }
+
+            html[data-overleaf-wide-editor='1'] .editor,
+            html[data-overleaf-wide-editor='1'] .editor-pane,
+            html[data-overleaf-wide-editor='1'] .pdf-pane,
+            html[data-overleaf-wide-editor='1'] .pdf-viewer {
+                min-width: 0 !important;
+                flex: 1 1 50% !important;
+            }
+
+            html[data-overleaf-wide-editor='1'] .content,
+            html[data-overleaf-wide-editor='1'] .container,
+            html[data-overleaf-wide-editor='1'] .layout,
+            html[data-overleaf-wide-editor='1'] .toolbar,
+            html[data-overleaf-wide-editor='1'] header {
+                max-width: none !important;
+            }
+
+            #${BUTTON_ID} {
+                position: fixed;
+                right: 16px;
+                bottom: 58px;
+                z-index: 2147483647;
+                border: 1px solid #d0d7de;
+                border-radius: 999px;
+                background: #ffffff;
+                color: #24292f;
+                padding: 8px 12px;
+                font: 600 12px/1.2 system-ui, sans-serif;
+                cursor: pointer;
+                box-shadow: 0 4px 12px rgba(31, 35, 40, 0.15);
+            }
+
+            html[data-overleaf-wide-editor='1'] #${BUTTON_ID} {
+                background: #0969da;
+                border-color: #0969da;
+                color: #ffffff;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function getEnabled() {
+        return localStorage.getItem(STORAGE_KEY) === '1';
+    }
+
+    function setEnabled(enabled) {
+        document.documentElement.dataset.overleafWideEditor = enabled ? '1' : '0';
+        localStorage.setItem(STORAGE_KEY, enabled ? '1' : '0');
+        const button = document.getElementById(BUTTON_ID);
+        if (button) {
+            button.textContent = enabled ? 'Wide: on' : 'Wide: off';
+            button.title = 'Toggle wide editor (Alt+Shift+W)';
+        }
+    }
+
+    function toggle() {
+        setEnabled(!getEnabled());
+    }
+
+    function ensureButton() {
+        let button = document.getElementById(BUTTON_ID);
+        if (button) return button;
+        button = document.createElement('button');
+        button.id = BUTTON_ID;
+        button.type = 'button';
+        button.addEventListener('click', toggle);
+        document.body.appendChild(button);
+        setEnabled(getEnabled());
+        return button;
+    }
+
+    function handleKeydown(event) {
+        if (event.defaultPrevented || isTypingTarget(event.target)) return;
+        if (event.altKey && event.shiftKey && event.key.toLowerCase() === 'w') {
+            event.preventDefault();
+            toggle();
+        }
+    }
+
+    function init() {
+        ensureStyle();
+        ensureButton();
+        setEnabled(getEnabled());
+        document.addEventListener('keydown', handleKeydown, true);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();

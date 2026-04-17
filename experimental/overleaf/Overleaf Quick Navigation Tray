@@ -1,0 +1,120 @@
+// ==UserScript==
+// @name         Overleaf Quick Navigation Tray
+// @namespace    http://tampermonkey.net/
+// @version      0.1.0
+// @description  Add a compact quick-link tray for common Overleaf project destinations
+// @match        https://*.overleaf.com/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Quick%20Navigation%20Tray
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Quick%20Navigation%20Tray
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafQuickNavigationTrayInitialized) return;
+    window.__overleafQuickNavigationTrayInitialized = true;
+
+    const ROOT_ID = 'overleaf-quick-navigation-tray';
+    const STORAGE_KEY = 'overleaf-quick-navigation-collapsed';
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
+    }
+
+    function createLink(label, href, openInNewTab = false) {
+        const link = document.createElement('a');
+        link.textContent = label;
+        link.href = href;
+        link.style.cssText = 'color:#0969da;text-decoration:none;padding:4px 8px;border-radius:999px;background:#f6f8fa;border:1px solid #d0d7de;font:600 12px/1.2 system-ui,sans-serif;';
+        if (openInNewTab) {
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+        }
+        return link;
+    }
+
+    function buildLinks() {
+        const projectId = getProjectId();
+        const links = [
+            { label: 'Dashboard', href: '/project' },
+            { label: 'Learn', href: '/learn', newTab: true },
+        ];
+
+        if (projectId) {
+            links.unshift(
+                { label: 'Editor', href: `/project/${encodeURIComponent(projectId)}` },
+                { label: 'History', href: `/project/${encodeURIComponent(projectId)}/history` },
+                { label: 'Settings', href: `/project/${encodeURIComponent(projectId)}/settings` },
+                { label: 'ZIP', href: `/project/${encodeURIComponent(projectId)}/download/zip`, newTab: true },
+            );
+        }
+
+        return links;
+    }
+
+    function getCollapsed() {
+        return localStorage.getItem(STORAGE_KEY) === '1';
+    }
+
+    function setCollapsed(collapsed) {
+        localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0');
+        const root = document.getElementById(ROOT_ID);
+        if (!root) return;
+        const body = root.querySelector('[data-role="body"]');
+        const toggle = root.querySelector('[data-role="toggle"]');
+        if (body) body.style.display = collapsed ? 'none' : 'flex';
+        if (toggle) toggle.textContent = collapsed ? 'Open nav' : 'Hide nav';
+    }
+
+    function ensureTray() {
+        let root = document.getElementById(ROOT_ID);
+        if (!root) {
+            root = document.createElement('section');
+            root.id = ROOT_ID;
+            root.style.cssText = 'position:fixed;top:16px;left:16px;z-index:2147483647;display:flex;flex-direction:column;gap:8px;max-width:min(90vw,420px);padding:10px 12px;background:rgba(255,255,255,0.97);border:1px solid #d0d7de;border-radius:14px;box-shadow:0 8px 24px rgba(31,35,40,0.12);backdrop-filter:blur(6px);';
+
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;';
+
+            const title = document.createElement('strong');
+            title.textContent = 'Overleaf nav';
+            title.style.cssText = 'font:700 12px/1.2 system-ui,sans-serif;color:#24292f;';
+
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.dataset.role = 'toggle';
+            toggle.style.cssText = 'border:1px solid #d0d7de;border-radius:999px;background:#f6f8fa;padding:4px 8px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;';
+            toggle.addEventListener('click', () => setCollapsed(!getCollapsed()));
+
+            header.append(title, toggle);
+
+            const body = document.createElement('div');
+            body.dataset.role = 'body';
+            body.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
+
+            root.append(header, body);
+            document.body.appendChild(root);
+        }
+
+        const body = root.querySelector('[data-role="body"]');
+        body.textContent = '';
+        buildLinks().forEach(link => body.appendChild(createLink(link.label, link.href, link.newTab)));
+        setCollapsed(getCollapsed());
+    }
+
+    const observer = new MutationObserver(() => ensureTray());
+
+    function init() {
+        observer.observe(document.body, { childList: true, subtree: true });
+        ensureTray();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();

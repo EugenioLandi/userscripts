@@ -1,0 +1,126 @@
+// ==UserScript==
+// @name         Overleaf Sidebar Checklist (Experimental)
+// @namespace    http://tampermonkey.net/
+// @version      0.2.0
+// @description  Add a native-sidebar checklist to Overleaf for per-project tasks
+// @match        https://*.overleaf.com/project/*
+// @require      https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/_nativeSidebarHost.js
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Checklist%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Checklist%20%28Experimental%29
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__experimentalOverleafSidebarChecklistInitialized) return;
+    window.__experimentalOverleafSidebarChecklistInitialized = true;
+
+    const host = window.__experimentalOverleafNativeSidebarHost;
+    const PANEL_ID = 'experimental-overleaf-sidebar-checklist';
+
+    function storageKey(api) {
+        return `experimental-overleaf-sidebar-checklist:${api.getProjectId() || 'unknown-project'}`;
+    }
+
+    function readItems(api) {
+        return api.readJson(storageKey(api), []);
+    }
+
+    function writeItems(api, items) {
+        api.writeJson(storageKey(api), items);
+    }
+
+    function createId() {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+
+    host.registerPanel({
+        id: PANEL_ID,
+        order: 60,
+        title: 'Checklist',
+        subtitle: 'Local project tasks inside the native sidebar',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M9 17l2 2 4-4"/><path d="M5 6h14"/></svg>',
+        render(container, api) {
+            const items = readItems(api);
+
+            const form = document.createElement('form');
+            form.style.cssText = 'display:flex;gap:8px;';
+            const input = document.createElement('input');
+            input.className = 'ol-native-sidebar-input';
+            input.placeholder = 'Add a task…';
+            const addButton = document.createElement('button');
+            addButton.type = 'submit';
+            addButton.className = 'ol-native-sidebar-button';
+            addButton.textContent = 'Add';
+            form.append(input, addButton);
+            container.appendChild(form);
+
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex;justify-content:flex-end;';
+            const clearDone = document.createElement('button');
+            clearDone.type = 'button';
+            clearDone.className = 'ol-native-sidebar-button';
+            clearDone.textContent = 'Clear done';
+            clearDone.addEventListener('click', () => {
+                writeItems(api, items.filter(item => !item.done));
+                api.rerender();
+            });
+            actions.appendChild(clearDone);
+            container.appendChild(actions);
+
+            form.addEventListener('submit', event => {
+                event.preventDefault();
+                const text = input.value.trim();
+                if (!text) return;
+                writeItems(api, [{ id: createId(), text, done: false }, ...items]);
+                api.rerender();
+            });
+
+            if (!items.length) {
+                const empty = document.createElement('p');
+                empty.className = 'ol-native-sidebar-muted';
+                empty.textContent = 'Track figures, references, experiments, or submission checks here.';
+                container.appendChild(empty);
+                api.setFooterText('0 tasks stored locally');
+                return;
+            }
+
+            const list = document.createElement('ul');
+            list.className = 'ol-native-sidebar-list';
+            items.forEach(item => {
+                const row = document.createElement('li');
+                row.className = 'ol-native-sidebar-card';
+                row.style.cssText = 'display:flex;align-items:flex-start;gap:10px;';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = Boolean(item.done);
+                checkbox.addEventListener('change', () => {
+                    writeItems(api, items.map(entry => entry.id === item.id ? { ...entry, done: checkbox.checked } : entry));
+                    api.rerender();
+                });
+
+                const text = document.createElement('div');
+                text.style.cssText = `flex:1 1 auto;font-size:0.8125rem;line-height:1.5;text-decoration:${item.done ? 'line-through' : 'none'};opacity:${item.done ? '0.72' : '1'};`;
+                text.textContent = item.text;
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'ol-native-sidebar-button';
+                remove.textContent = 'Remove';
+                remove.addEventListener('click', () => {
+                    writeItems(api, items.filter(entry => entry.id !== item.id));
+                    api.rerender();
+                });
+
+                row.append(checkbox, text, remove);
+                list.appendChild(row);
+            });
+            container.appendChild(list);
+            const doneCount = items.filter(item => item.done).length;
+            api.setFooterText(`${doneCount}/${items.length} tasks completed`);
+        },
+    });
+})();

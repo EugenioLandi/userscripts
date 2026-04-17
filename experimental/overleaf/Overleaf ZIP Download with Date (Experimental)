@@ -1,0 +1,199 @@
+// ==UserScript==
+// @name         Overleaf ZIP Download with Date (Experimental)
+// @namespace    http://tampermonkey.net/
+// @version      1.3.1
+// @description  Add custom-named PDF and ZIP downloads to Overleaf with timestamped filenames and status feedback
+// @author       You
+// @match        https://*.overleaf.com/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20ZIP%20Download%20with%20Date%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20ZIP%20Download%20with%20Date%20%28Experimental%29
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__experimentalOverleafCustomDownloadsInitialized) return;
+    window.__experimentalOverleafCustomDownloadsInitialized = true;
+
+    const ZIP_BUTTON_CLASS = 'experimental-overleaf-zip-download-btn';
+    const STATUS_ID = 'experimental-overleaf-download-status';
+
+    function getZipIconMarkup() {
+        return [
+            '<span class="button-content" aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;">',
+            '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" stroke="none" focusable="false" aria-hidden="true">',
+            '<path d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.828A2 2 0 0 0 19.414 8l-5.414-5.414A2 2 0 0 0 12.172 2H6zm6 1.414L18.586 10H12a1 1 0 0 1-1-1V3.414zM7 9h2v2H7V9zm0 3h2v2H7v-2zm3-3h2v2h-2V9zm0 3h2v2h-2v-2zm-3 3h2v2H7v-2zm3 0h2v2h-2v-2zm6-7v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5.172z"/>',
+            '</svg>',
+            '</span>',
+        ].join('');
+    }
+
+    function getTimestamp() {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}_${hours}-${minutes}`;
+    }
+
+    function sanitizeFilename(name) {
+        return String(name || 'document')
+            .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\.+$/g, '') || 'document';
+    }
+
+    function getProjectName() {
+        const selectors = [
+            '.ide-redesign-toolbar-project-name',
+            '[data-testid="project-name"]',
+            'input[aria-label="Project name"]',
+            'input[name="projectName"]',
+        ];
+
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            const value = element?.value || element?.textContent;
+            if (value && value.trim()) return value.trim();
+        }
+
+        const title = document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim();
+        return title || 'document';
+    }
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
+    }
+
+    function buildFilename(extension) {
+        return `${sanitizeFilename(getProjectName())} - ${getTimestamp()}.${extension}`;
+    }
+
+    function getStatusElement(anchor) {
+        let status = document.getElementById(STATUS_ID);
+        if (!status) {
+            status = document.createElement('span');
+            status.id = STATUS_ID;
+            status.style.cssText = 'margin-left:8px;font:600 12px/1 system-ui,sans-serif;color:#57606a;white-space:nowrap;';
+        }
+
+        if (anchor?.parentElement && status.parentElement !== anchor.parentElement) {
+            anchor.parentElement.appendChild(status);
+        }
+
+        return status;
+    }
+
+    function setStatus(anchor, message, isError = false) {
+        const status = getStatusElement(anchor);
+        status.textContent = message;
+        status.style.color = isError ? '#cf222e' : '#57606a';
+    }
+
+    function triggerDownload(blob, filename) {
+        const link = document.createElement('a');
+        const blobUrl = URL.createObjectURL(blob);
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
+    }
+
+    async function downloadFile(url, filename, anchor) {
+        setStatus(anchor, `Downloading ${filename}…`);
+
+        try {
+            const response = await fetch(new URL(url, window.location.origin), { credentials: 'include' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            triggerDownload(await response.blob(), filename);
+            setStatus(anchor, `Saved ${filename}`);
+        } catch (error) {
+            console.error('[Overleaf downloads]', error);
+            setStatus(anchor, `Download failed (${error.message})`, true);
+            window.open(url, '_blank', 'noopener noreferrer');
+        }
+    }
+
+    function makeCompactToolbarButton(button, label, iconMarkup, title) {
+        button.draggable = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('data-ol-loading');
+        button.setAttribute('role', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = title;
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        button.style.minWidth = '32px';
+        button.style.width = '32px';
+        button.style.height = '32px';
+        button.style.padding = '0';
+        button.style.display = 'inline-flex';
+        button.style.alignItems = 'center';
+        button.style.justifyContent = 'center';
+        button.innerHTML = iconMarkup;
+        return button;
+    }
+
+    function createZipButton(pdfButton) {
+        const existing = document.querySelector(`.${ZIP_BUTTON_CLASS}`);
+        if (existing) return existing;
+
+        const zipButton = pdfButton.cloneNode(true);
+        zipButton.classList.add(ZIP_BUTTON_CLASS);
+        zipButton.removeAttribute('href');
+        zipButton.href = '#';
+        makeCompactToolbarButton(zipButton, 'Download ZIP', getZipIconMarkup(), 'Download ZIP with custom filename');
+        zipButton.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const projectId = getProjectId();
+            if (!projectId) {
+                setStatus(pdfButton, 'Project ID not found', true);
+                return;
+            }
+            downloadFile(`/project/${encodeURIComponent(projectId)}/download/zip`, buildFilename('zip'), zipButton);
+        });
+
+        pdfButton.parentElement?.insertBefore(zipButton, pdfButton.nextSibling);
+        return zipButton;
+    }
+
+    function addZipDownloadButton() {
+        const pdfButton = document.querySelector('a[aria-label="Download PDF"]');
+        if (!pdfButton) return;
+        createZipButton(pdfButton);
+        getStatusElement(pdfButton);
+    }
+
+    document.addEventListener('click', event => {
+        const target = event.target.closest('a[aria-label="Download PDF"]');
+        if (!target || target.classList.contains(ZIP_BUTTON_CLASS)) return;
+        if (!target.href) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        downloadFile(target.href, buildFilename('pdf'), target);
+    }, true);
+
+    const observer = new MutationObserver(() => addZipDownloadButton());
+
+    function init() {
+        observer.observe(document.body, { childList: true, subtree: true });
+        addZipDownloadButton();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();

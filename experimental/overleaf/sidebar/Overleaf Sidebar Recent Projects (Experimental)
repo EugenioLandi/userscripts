@@ -1,0 +1,99 @@
+// ==UserScript==
+// @name         Overleaf Sidebar Recent Projects (Experimental)
+// @namespace    http://tampermonkey.net/
+// @version      0.2.0
+// @description  Add native-sidebar recent project history to Overleaf
+// @match        https://*.overleaf.com/project/*
+// @require      https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/_nativeSidebarHost.js
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Recent%20Projects%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Recent%20Projects%20%28Experimental%29
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__experimentalOverleafSidebarRecentProjectsInitialized) return;
+    window.__experimentalOverleafSidebarRecentProjectsInitialized = true;
+
+    const host = window.__experimentalOverleafNativeSidebarHost;
+    const STORAGE_KEY = 'experimental-overleaf-sidebar-recent-projects';
+    const LIMIT = 12;
+
+    function readProjects() {
+        return host.readJson(STORAGE_KEY, []);
+    }
+
+    function writeProjects(projects) {
+        host.writeJson(STORAGE_KEY, projects.slice(0, LIMIT));
+    }
+
+    function rememberCurrentProject() {
+        const projectId = host.getProjectId();
+        if (!projectId) return;
+        const entry = {
+            id: projectId,
+            name: host.getProjectName(),
+            url: host.buildProjectUrl(''),
+            updatedAt: Date.now(),
+        };
+        const deduped = readProjects().filter(project => project.id !== entry.id);
+        writeProjects([entry, ...deduped].sort((left, right) => right.updatedAt - left.updatedAt));
+        host.rerenderPanel('experimental-overleaf-sidebar-recent-projects');
+    }
+
+    rememberCurrentProject();
+    window.addEventListener('focus', rememberCurrentProject);
+    window.addEventListener('pageshow', rememberCurrentProject);
+
+    host.registerPanel({
+        id: 'experimental-overleaf-sidebar-recent-projects',
+        order: 40,
+        title: 'Recent projects',
+        subtitle: 'Local history of what you opened lately',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>',
+        render(container, api) {
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex;justify-content:flex-end;';
+            const clearButton = document.createElement('button');
+            clearButton.type = 'button';
+            clearButton.className = 'ol-native-sidebar-button';
+            clearButton.textContent = 'Clear history';
+            clearButton.addEventListener('click', () => {
+                writeProjects([]);
+                api.rerender();
+            });
+            actions.appendChild(clearButton);
+            container.appendChild(actions);
+
+            const projects = readProjects();
+            if (!projects.length) {
+                const empty = document.createElement('p');
+                empty.className = 'ol-native-sidebar-muted';
+                empty.textContent = 'Open a few projects and they will appear here.';
+                container.appendChild(empty);
+                api.setFooterText('No local project history yet');
+                return;
+            }
+
+            const list = document.createElement('ul');
+            list.className = 'ol-native-sidebar-list';
+            projects.forEach(project => {
+                const item = document.createElement('li');
+                item.className = 'ol-native-sidebar-card';
+                const link = document.createElement('a');
+                link.href = project.url;
+                link.textContent = project.name || project.id;
+                link.style.cssText = 'display:block;color:inherit;text-decoration:none;font-weight:600;';
+                const meta = document.createElement('div');
+                meta.style.cssText = 'margin-top:4px;font-size:0.75rem;line-height:1.45;word-break:break-word;opacity:0.82;';
+                meta.textContent = `${project.id} · ${api.formatDateTime(project.updatedAt)}`;
+                item.append(link, meta);
+                list.appendChild(item);
+            });
+            container.appendChild(list);
+            api.setFooterText(`${projects.length} project${projects.length === 1 ? '' : 's'} stored locally`);
+        },
+    });
+})();
