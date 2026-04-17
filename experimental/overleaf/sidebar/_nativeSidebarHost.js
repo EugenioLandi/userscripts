@@ -498,8 +498,8 @@
     function shouldRenderPanel(panelRoot, panelDefinition) {
         if (!panelRoot) return true;
         const currentProjectId = getCurrentProjectIdOrEmpty();
-        const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== currentProjectId) return true;
+        const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== currentRenderVersion) return true;
         const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
         return !body || !body.hasChildNodes();
@@ -593,7 +593,7 @@
 
         const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
         if (activePanel) {
-            let activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || null;
+            let activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId);
             if (!activePanelElement) {
                 activePanelElement = ensureCustomPanel(context, activePanel);
             }
