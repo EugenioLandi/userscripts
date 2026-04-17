@@ -9,15 +9,11 @@
     const PANEL_ATTR = 'data-experimental-overleaf-native-panel';
     const TAB_ATTR = 'data-experimental-overleaf-native-tab';
     const FOOTER_CLASS = 'experimental-overleaf-native-sidebar-footer-slot';
-    const RAIL_MIN_WIDTH = 28;
-    const RAIL_MAX_WIDTH = 112;
-    const RAIL_MIN_HEIGHT = 120;
-    const RAIL_MIN_BUTTONS = 1;
-    const RAIL_MAX_BUTTONS = 24;
-    const PANEL_MIN_WIDTH = 180;
-    const PANEL_MAX_WIDTH = 560;
-    const PANEL_MIN_HEIGHT = 220;
-    const PANEL_MAX_LEFT = 280;
+    const NATIVE_TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
+    const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
+    const NATIVE_FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
+    const NATIVE_ACTIVE_TAB_SELECTOR = '[role="tab"][aria-selected="true"]';
+    const NATIVE_ACTIVE_PANE_SELECTOR = '.tab-pane.active[role="tabpanel"]';
     const SIDEBAR_OPEN_DELAY_MS = 180;
     const DOM_SYNC_DEBOUNCE_MS = 120;
 
@@ -29,6 +25,8 @@
         refreshTimer: null,
         observer: null,
         lastHref: global.location.href,
+        lastNativeTabId: null,
+        lastNativePaneId: null,
     };
 
     function normalizeText(value) {
@@ -145,94 +143,38 @@
         };
     }
 
-    function getAllVisibleButtons() {
-        return [...document.querySelectorAll('button, [role="tab"], [role="button"]')].filter(isVisible);
+    function getNativeTabs(tabsWrapper) {
+        return tabsWrapper
+            ? [...tabsWrapper.children].filter(element => element.getAttribute('role') === 'tab' && !element.hasAttribute(TAB_ATTR))
+            : [];
     }
 
-    function findFileTreeButton() {
-        return getAllVisibleButtons()
-            .map(element => {
-                const text = getElementText(element);
-                if (!text.includes('file tree')) return null;
-                let score = 0;
-                if (element.matches('button')) score += 4;
-                if (element.getAttribute('role') === 'tab') score += 4;
-                if (element.getAttribute('aria-selected') === 'true') score += 2;
-                if (element.closest('nav, aside')) score += 1;
-                return { element, score };
-            })
-            .filter(Boolean)
-            .sort((left, right) => right.score - left.score)[0]?.element || null;
+    function findNativeActiveTab(tabsWrapper) {
+        return tabsWrapper?.querySelector(NATIVE_ACTIVE_TAB_SELECTOR) || null;
     }
 
-    function findSelectedNativeTab() {
-        return getAllVisibleButtons().find(element => {
-            if (element.hasAttribute(TAB_ATTR)) return false;
-            const text = getElementText(element);
-            if (!text) return false;
-            return element.getAttribute('aria-selected') === 'true'
-                || element.getAttribute('aria-pressed') === 'true'
-                || /selected|active/.test(`${element.className || ''}`);
-        }) || null;
-    }
-
-    function findRailContainer(fileTreeButton) {
-        if (!fileTreeButton) return null;
-
-        let current = fileTreeButton;
-        let best = fileTreeButton.parentElement;
-        while (current && current !== document.body) {
-            const rect = current.getBoundingClientRect();
-            const buttons = [...current.querySelectorAll('button, [role="tab"], [role="button"]')].filter(isVisible);
-            if (
-                rect.width > RAIL_MIN_WIDTH
-                && rect.width <= RAIL_MAX_WIDTH
-                && rect.height >= RAIL_MIN_HEIGHT
-                && buttons.length >= RAIL_MIN_BUTTONS
-                && buttons.length <= RAIL_MAX_BUTTONS
-            ) {
-                best = current;
-            }
-            current = current.parentElement;
-        }
-        return best;
-    }
-
-    function getPanelCandidateScore(element) {
-        if (!isVisible(element)) return -1;
-        const rect = element.getBoundingClientRect();
-        if (
-            rect.width < PANEL_MIN_WIDTH
-            || rect.width > PANEL_MAX_WIDTH
-            || rect.height < PANEL_MIN_HEIGHT
-            || rect.left > PANEL_MAX_LEFT
-        ) return -1;
-        const text = normalizeText(element.textContent);
-        let score = 0;
-        if (text.includes('file tree')) score += 8;
-        if (text.includes('outline')) score += 4;
-        if (text.includes('review')) score += 4;
-        if (element.matches('aside')) score += 3;
-        if (element.querySelector('button, [role="tab"], [role="button"]')) score += 1;
-        return score;
-    }
-
-    function findSidebarPanelContainer() {
-        return [...document.querySelectorAll('aside, section, div')]
-            .map(element => ({ element, score: getPanelCandidateScore(element) }))
-            .filter(candidate => candidate.score >= 0)
-            .sort((left, right) => right.score - left.score)[0]?.element || null;
+    function findNativeActivePane(tabContent, activeTab) {
+        const controlledPane = activeTab?.getAttribute('aria-controls')
+            ? document.getElementById(activeTab.getAttribute('aria-controls'))
+            : null;
+        if (controlledPane) return controlledPane;
+        return tabContent?.querySelector(NATIVE_ACTIVE_PANE_SELECTOR) || null;
     }
 
     function resolveContext() {
-        const fileTreeButton = findFileTreeButton();
-        const railContainer = findRailContainer(fileTreeButton);
-        const panelContainer = findSidebarPanelContainer();
+        const tabsWrapper = document.querySelector(NATIVE_TABS_WRAPPER_SELECTOR);
+        const fileTreeButton = tabsWrapper?.querySelector(NATIVE_FILE_TREE_TAB_SELECTOR) || null;
+        const templateButton = fileTreeButton || getNativeTabs(tabsWrapper)[0] || null;
+        const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
+        const activeNativeTab = findNativeActiveTab(tabsWrapper);
+        const activeNativePane = findNativeActivePane(tabContent, activeNativeTab);
         return {
             fileTreeButton,
-            railContainer,
-            panelContainer,
-            selectedNativeTab: findSelectedNativeTab(),
+            tabsWrapper,
+            templateButton,
+            tabContent,
+            activeNativeTab,
+            activeNativePane,
         };
     }
 
@@ -253,17 +195,16 @@
             }
 
             [${PANEL_ATTR}] {
-                position: absolute;
-                inset: 0;
-                z-index: 30;
                 display: none;
                 flex-direction: column;
+                height: 100%;
                 min-height: 0;
                 background: var(--experimental-overleaf-sidebar-bg, #ffffff);
                 color: var(--experimental-overleaf-sidebar-fg, #1f2937);
             }
 
-            [${PANEL_ATTR}].is-open {
+            [${PANEL_ATTR}].is-open,
+            [${PANEL_ATTR}].active {
                 display: flex;
             }
 
@@ -405,35 +346,30 @@
         wrapper.innerHTML = iconMarkup.trim();
         const icon = wrapper.firstElementChild;
         if (!icon) return;
-
-        button.querySelectorAll('svg, img').forEach((element, index) => {
-            if (index === 0) {
-                element.replaceWith(icon.cloneNode(true));
-            } else {
-                element.remove();
-            }
-        });
-
-        if (!button.querySelector('svg')) {
-            button.textContent = '';
-            button.appendChild(icon);
-        }
+        icon.classList.add('ide-rail-tab-link-icon');
+        button.replaceChildren(icon);
     }
 
     function createCustomTabButton(panel, templateButton) {
-        const button = templateButton.cloneNode(true);
+        const button = document.createElement('button');
+        button.className = templateButton.className;
         button.setAttribute(TAB_ATTR, panel.id);
         button.dataset.panelId = panel.id;
+        button.dataset.rrUiEventKey = panel.id;
         button.title = panel.title;
         button.setAttribute('aria-label', panel.title);
         button.setAttribute('type', 'button');
-        button.removeAttribute('id');
-        button.removeAttribute('aria-controls');
-        button.removeAttribute('aria-labelledby');
-        button.removeAttribute('aria-describedby');
-        button.removeAttribute('href');
-        button.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'));
+        button.setAttribute('role', 'tab');
+        button.id = `experimental-overleaf-native-sidebar-tab-${panel.id}`;
+        button.setAttribute('aria-controls', `experimental-overleaf-native-sidebar-pane-${panel.id}`);
+        button.setAttribute('aria-selected', 'false');
+        button.setAttribute('tabindex', '-1');
+        button.classList.remove('active', 'open-rail');
         replaceButtonIcon(button, panel.icon);
+        const label = document.createElement('span');
+        label.className = 'visually-hidden';
+        label.textContent = panel.title;
+        button.appendChild(label);
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
@@ -447,9 +383,9 @@
     }
 
     function applyTheme(context, customPanel, customButtons) {
-        const panelContainer = context.panelContainer;
+        const panelContainer = context.activeNativePane || context.tabContent;
         const fileTreeButton = context.fileTreeButton;
-        const activeTab = context.selectedNativeTab || fileTreeButton;
+        const activeTab = context.activeNativeTab || fileTreeButton;
         const panelStyles = panelContainer ? getComputedStyle(panelContainer) : null;
         const activeStyles = activeTab ? getComputedStyle(activeTab) : null;
         const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
@@ -479,26 +415,33 @@
         });
     }
 
-    function hideNativeSelections(context) {
-        context.railContainer?.querySelectorAll('button, [role="tab"], [role="button"]').forEach(button => {
-            if (button.hasAttribute(TAB_ATTR)) return;
-            if (!isVisible(button)) return;
+    function bindNativeTabHandlers(context) {
+        getNativeTabs(context.tabsWrapper).forEach(button => {
+            if (button.dataset.experimentalOverleafNativeSidebarBound === '1') return;
+            button.dataset.experimentalOverleafNativeSidebarBound = '1';
             button.addEventListener('click', () => {
-                if (state.activeId) {
+                state.lastNativeTabId = button.id || state.lastNativeTabId;
+                state.lastNativePaneId = button.getAttribute('aria-controls') || state.lastNativePaneId;
+                if (state.isOpen) {
                     state.isOpen = false;
                     persistState();
-                    sync();
+                    scheduleSync(SIDEBAR_OPEN_DELAY_MS);
                 }
-            }, { capture: true, once: true });
+            });
         });
     }
 
-    function ensureCustomPanel(context) {
-        if (!context.panelContainer) return null;
-        let panelRoot = context.panelContainer.querySelector(`[${PANEL_ATTR}]`);
+    function ensureCustomPanel(context, panel) {
+        if (!context.tabContent) return null;
+        let panelRoot = context.tabContent.querySelector(`[${TAB_ATTR}="${panel.id}"][${PANEL_ATTR}]`);
         if (!panelRoot) {
-            panelRoot = document.createElement('section');
+            panelRoot = document.createElement('div');
             panelRoot.setAttribute(PANEL_ATTR, 'true');
+            panelRoot.setAttribute(TAB_ATTR, panel.id);
+            panelRoot.setAttribute('role', 'tabpanel');
+            panelRoot.id = `experimental-overleaf-native-sidebar-pane-${panel.id}`;
+            panelRoot.setAttribute('aria-labelledby', `experimental-overleaf-native-sidebar-tab-${panel.id}`);
+            panelRoot.className = 'tab-pane';
             const header = document.createElement('div');
             header.className = 'experimental-overleaf-native-sidebar-header';
             const heading = document.createElement('div');
@@ -523,21 +466,14 @@
             const footer = document.createElement('div');
             footer.className = FOOTER_CLASS;
             panelRoot.append(header, body, footer);
-            context.panelContainer.style.position = context.panelContainer.style.position || 'relative';
-            context.panelContainer.appendChild(panelRoot);
+            context.tabContent.appendChild(panelRoot);
         }
         return panelRoot;
     }
 
-    function renderPanelContent(context) {
-        const panelDefinition = state.activeId ? state.panels.get(state.activeId) : null;
-        const panelRoot = ensureCustomPanel(context);
+    function renderPanelContent(context, panelDefinition) {
+        const panelRoot = ensureCustomPanel(context, panelDefinition);
         if (!panelRoot) return;
-
-        if (!state.isOpen || !panelDefinition) {
-            panelRoot.classList.remove('is-open');
-            return;
-        }
 
         const title = panelRoot.querySelector('.experimental-overleaf-native-sidebar-title');
         const subtitle = panelRoot.querySelector('.experimental-overleaf-native-sidebar-subtitle');
@@ -554,8 +490,8 @@
 
     async function ensureSidebarOpen() {
         let context = resolveContext();
-        if (context.panelContainer) return context;
-        if (context.fileTreeButton) {
+        if (context.tabContent) return context;
+        if (context.fileTreeButton && isVisible(context.fileTreeButton)) {
             context.fileTreeButton.click();
             await wait(SIDEBAR_OPEN_DELAY_MS);
             context = resolveContext();
@@ -564,28 +500,86 @@
     }
 
     function syncTabs(context) {
-        const template = context.fileTreeButton || context.railContainer?.querySelector('button, [role="tab"], [role="button"]');
-        if (!context.railContainer || !template) return [];
+        const template = context.templateButton;
+        if (!context.tabsWrapper || !template) return [];
 
         const buttons = [];
         [...state.panels.values()].sort((left, right) => (left.order || 0) - (right.order || 0)).forEach(panel => {
-            let button = context.railContainer.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
+            let button = context.tabsWrapper.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
             if (!button) {
                 button = createCustomTabButton(panel, template);
-                context.railContainer.appendChild(button);
+                context.tabsWrapper.appendChild(button);
             }
             buttons.push(button);
         });
         return buttons;
     }
 
+    function setTabState(button, isActive) {
+        button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        button.setAttribute('tabindex', isActive ? '0' : '-1');
+        button.classList.toggle('active', isActive);
+        button.classList.toggle('open-rail', isActive);
+    }
+
+    function setPaneState(pane, isActive) {
+        pane.classList.toggle('active', isActive);
+        pane.classList.toggle('is-open', isActive);
+        pane.hidden = !isActive;
+    }
+
+    function rememberNativeSelection(context) {
+        state.lastNativeTabId = context.activeNativeTab?.id || state.lastNativeTabId;
+        state.lastNativePaneId = context.activeNativePane?.id || state.lastNativePaneId;
+    }
+
+    function syncPanels(context) {
+        if (!context.tabContent) return [];
+        return [...state.panels.values()]
+            .sort((left, right) => (left.order || 0) - (right.order || 0))
+            .map(panel => ensureCustomPanel(context, panel))
+            .filter(Boolean);
+    }
+
+    function updateSelectionState(context, customButtons, customPanels) {
+        const nativeTabs = getNativeTabs(context.tabsWrapper);
+        const nativePanes = context.tabContent
+            ? [...context.tabContent.querySelectorAll('[role="tabpanel"]')].filter(pane => !pane.hasAttribute(PANEL_ATTR))
+            : [];
+
+        if (state.isOpen && state.activeId) {
+            nativeTabs.forEach(button => setTabState(button, false));
+            nativePanes.forEach(pane => setPaneState(pane, false));
+            customButtons.forEach(button => setTabState(button, button.dataset.panelId === state.activeId));
+            customPanels.forEach(panel => setPaneState(panel, panel.getAttribute(TAB_ATTR) === state.activeId));
+            return;
+        }
+
+        customButtons.forEach(button => setTabState(button, false));
+        customPanels.forEach(panel => setPaneState(panel, false));
+
+        const nativeTabToRestore = nativeTabs.find(button => button.id === state.lastNativeTabId) || context.activeNativeTab || nativeTabs[0];
+        const nativePaneToRestore = nativeTabToRestore?.getAttribute('aria-controls')
+            ? document.getElementById(nativeTabToRestore.getAttribute('aria-controls'))
+            : nativePanes.find(pane => pane.id === state.lastNativePaneId) || context.activeNativePane || nativePanes[0];
+
+        nativeTabs.forEach(button => setTabState(button, button === nativeTabToRestore));
+        nativePanes.forEach(pane => setPaneState(pane, pane === nativePaneToRestore));
+    }
+
     async function sync() {
         const context = await ensureSidebarOpen();
+        if (!context.tabsWrapper || !context.tabContent) return;
+        bindNativeTabHandlers(context);
         const buttons = syncTabs(context);
-        const panelRoot = ensureCustomPanel(context);
-        if (panelRoot) renderPanelContent(context);
-        applyTheme(context, panelRoot || document.documentElement, buttons);
-        hideNativeSelections(context);
+        const panels = syncPanels(context);
+
+        const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
+        if (activePanel) renderPanelContent(context, activePanel);
+
+        updateSelectionState(context, buttons, panels);
+        const activeCustomPanel = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || context.activeNativePane;
+        applyTheme(context, activeCustomPanel || document.documentElement, buttons);
     }
 
     function scheduleSync(delay = 0) {
@@ -597,6 +591,7 @@
 
     function openPanel(panelId) {
         if (!state.panels.has(panelId)) return;
+        rememberNativeSelection(resolveContext());
         state.activeId = panelId;
         state.isOpen = true;
         persistState();
