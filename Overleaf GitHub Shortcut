@@ -26,6 +26,16 @@
         return document.querySelector('.custom-zip-download-btn');
     }
 
+    function getClickableText(element) {
+        return normalizeText([
+            element.textContent,
+            element.getAttribute('aria-label'),
+            element.getAttribute('title'),
+            element.getAttribute('data-testid'),
+            element.getAttribute('href'),
+        ].filter(Boolean).join(' '));
+    }
+
     function getStatusElement(anchor) {
         let status = document.getElementById(STATUS_ID);
         if (!status) {
@@ -56,20 +66,18 @@
     }
 
     function getTargetScore(element) {
-        const text = normalizeText([
-            element.textContent,
-            element.getAttribute('aria-label'),
-            element.getAttribute('title'),
-            element.getAttribute('data-testid'),
-            element.getAttribute('href'),
-        ].filter(Boolean).join(' '));
+        const text = getClickableText(element);
 
         if (!text.includes('github')) return -1;
 
         let score = 0;
         if (element.matches('a[href]')) score += 4;
+        if (text.includes('/github')) score += 5;
+        if (text.includes('github sync')) score += 5;
+        if (text === 'github') score += 4;
         if (text.includes('sync')) score += 4;
         if (text.includes('integration')) score += 3;
+        if (text.includes('git')) score += 2;
         if (text.includes('link')) score += 2;
         if (text.includes('settings')) score += 1;
         if (isVisible(element)) score += 2;
@@ -78,29 +86,19 @@
         return score;
     }
 
+    function rankCandidates(selector, scoreFn) {
+        return [...document.querySelectorAll(selector)]
+            .map(element => ({ element, score: scoreFn(element) }))
+            .filter(candidate => candidate.score >= 0)
+            .sort((left, right) => right.score - left.score);
+    }
+
     function findGitHubTarget() {
-        const candidates = [...document.querySelectorAll('a, button, [role="menuitem"], [data-testid], [aria-label], [title]')];
-        let best = null;
-        let bestScore = -1;
-
-        for (const element of candidates) {
-            const score = getTargetScore(element);
-            if (score > bestScore) {
-                best = element;
-                bestScore = score;
-            }
-        }
-
-        return bestScore >= 0 ? best : null;
+        return rankCandidates('a, button, [role="menuitem"], [data-testid], [aria-label], [title]', getTargetScore)[0]?.element || null;
     }
 
     function getMenuTriggerScore(element) {
-        const text = normalizeText([
-            element.textContent,
-            element.getAttribute('aria-label'),
-            element.getAttribute('title'),
-            element.getAttribute('data-testid'),
-        ].filter(Boolean).join(' '));
+        const text = getClickableText(element);
 
         if (!element.matches('button, [role="button"]')) return -1;
         if (!isVisible(element)) return -1;
@@ -110,25 +108,17 @@
         if (text.includes('project')) score += 2;
         if (text.includes('settings')) score += 2;
         if (text.includes('source')) score += 1;
+        if (text.includes('github')) score += 6;
         if (element.getAttribute('aria-haspopup') === 'menu') score += 2;
         if (element.closest('header')) score += 2;
         return score;
     }
 
     function findMenuTrigger() {
-        const candidates = [...document.querySelectorAll('button, [role="button"]')];
-        let best = null;
-        let bestScore = -1;
-
-        for (const element of candidates) {
-            const score = getMenuTriggerScore(element);
-            if (score > bestScore) {
-                best = element;
-                bestScore = score;
-            }
-        }
-
-        return bestScore > 0 ? best : null;
+        return rankCandidates('button, [role="button"]', getMenuTriggerScore)
+            .filter(candidate => candidate.score > 0)
+            .map(candidate => candidate.element)
+            .filter(Boolean);
     }
 
     function wait(ms) {
@@ -157,20 +147,34 @@
             return;
         }
 
-        const menuTrigger = findMenuTrigger();
-        if (menuTrigger) {
+        for (const menuTrigger of findMenuTrigger().slice(0, 5)) {
             menuTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
             await wait(250);
             target = findGitHubTarget();
-        }
-
-        if (target) {
-            activateTarget(target);
-            setStatus(shortcutButton, 'Opened GitHub integration');
-            return;
+            if (target) {
+                activateTarget(target);
+                setStatus(shortcutButton, 'Opened GitHub integration');
+                return;
+            }
         }
 
         setStatus(shortcutButton, 'GitHub integration button not visible. Try opening the project menu first.', true);
+    }
+
+    function makeCompactToolbarButton(button, label, emoji, title) {
+        button.draggable = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('data-ol-loading');
+        button.setAttribute('role', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = title;
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        button.style.minWidth = 'auto';
+        button.style.padding = '0 6px';
+        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font-size:15px;line-height:1;">${emoji}</span>`;
+        return button;
     }
 
     function createShortcutButton(referenceButton) {
@@ -179,11 +183,9 @@
 
         button = referenceButton.cloneNode(true);
         button.classList.add(BUTTON_CLASS);
-        button.setAttribute('aria-label', 'Open GitHub integration');
         button.removeAttribute('href');
         button.href = '#';
-        button.title = 'Open GitHub integration';
-        button.innerHTML = '<span class="button-content" aria-hidden="false"><span aria-hidden="true">GitHub</span></span>';
+        makeCompactToolbarButton(button, 'Open GitHub integration', '🐙', 'Open GitHub integration');
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();

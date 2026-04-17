@@ -51,12 +51,12 @@
             badge.style.cssText = [
                 'display:inline-flex',
                 'align-items:center',
-                'margin-left:8px',
-                'padding:4px 10px',
+                'margin-left:6px',
+                'padding:2px 6px',
                 'border-radius:999px',
                 'background:#f6f8fa',
                 'border:1px solid #d0d7de',
-                'font:600 12px/1 system-ui,sans-serif',
+                'font:600 11px/1 system-ui,sans-serif',
                 'color:#24292f',
                 'white-space:nowrap',
             ].join(';');
@@ -74,7 +74,8 @@
         if (!badge) return;
 
         if (STATE.active) {
-            badge.textContent = `Compiling ${formatSeconds(Date.now() - STATE.startTime)}`;
+            badge.textContent = `⏱ ${formatSeconds(Date.now() - STATE.startTime)}`;
+            badge.title = 'Compile in progress';
             badge.style.background = '#fff8e8';
             badge.style.borderColor = '#d4a72c66';
             badge.style.color = '#7d4e00';
@@ -82,14 +83,16 @@
         }
 
         if (STATE.lastDuration !== null) {
-            badge.textContent = `Last compile ${formatSeconds(STATE.lastDuration)}`;
+            badge.textContent = `⏱ ${formatSeconds(STATE.lastDuration)}`;
+            badge.title = 'Last compile duration';
             badge.style.background = '#eef4ff';
             badge.style.borderColor = '#80a6ff66';
             badge.style.color = '#1f4db8';
             return;
         }
 
-        badge.textContent = 'Compile timer ready';
+        badge.textContent = '⏱';
+        badge.title = 'Compile timer ready';
         badge.style.background = '#f6f8fa';
         badge.style.borderColor = '#d0d7de';
         badge.style.color = '#24292f';

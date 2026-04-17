@@ -110,17 +110,31 @@
         }
     }
 
+    function makeCompactToolbarButton(button, label, emoji, title) {
+        button.draggable = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('data-ol-loading');
+        button.setAttribute('role', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = title;
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        button.style.minWidth = 'auto';
+        button.style.padding = '0 6px';
+        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font-size:15px;line-height:1;">${emoji}</span>`;
+        return button;
+    }
+
     function createZipButton(pdfButton) {
         const existing = document.querySelector(`.${ZIP_BUTTON_CLASS}`);
         if (existing) return existing;
 
         const zipButton = pdfButton.cloneNode(true);
         zipButton.classList.add(ZIP_BUTTON_CLASS);
-        zipButton.setAttribute('aria-label', 'Download ZIP');
         zipButton.removeAttribute('href');
         zipButton.href = '#';
-        zipButton.title = 'Download ZIP with custom filename';
-        zipButton.innerHTML = '<span class="button-content" aria-hidden="false"><span aria-hidden="true">ZIP</span></span>';
+        makeCompactToolbarButton(zipButton, 'Download ZIP', '🗜️', 'Download ZIP with custom filename');
         zipButton.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
