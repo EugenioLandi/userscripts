@@ -1,6 +1,6 @@
 # Experimental Overleaf native sidebar userscripts
 
-Six Tampermonkey userscripts that add custom tabs to Overleaf's **built-in left
+Two Tampermonkey userscripts that add custom tabs to Overleaf's **built-in left
 sidebar** (the vertical rail with the file tree, search, integrations, review,
 and chat icons). Each script creates its own icon in that rail and renders its
 panel in the same sidebar surface.
@@ -10,11 +10,7 @@ panel in the same sidebar surface.
 | # | Script | What it adds |
 |---|--------|-------------|
 | 1 | **Overleaf Sidebar Local Notepad** | A per-project scratch pad (autosaved in `localStorage`). |
-| 2 | **Overleaf Sidebar Quick Links** | A 2 × 3 grid of project destinations: editor, history, settings, ZIP download, Learn, and dashboard. |
-| 3 | **Overleaf Sidebar Project Info** | Copy-friendly project metadata: name, ID, editor URL, history URL, and a Markdown link. |
-| 4 | **Overleaf Sidebar Recent Projects** | A locally stored list of recently opened projects with one-click switching. |
-| 5 | **Overleaf Sidebar Compile Insights** | Compile timing history tracked from network requests (current, average, and slowest times). |
-| 6 | **Overleaf Sidebar Checklist** | A per-project task list for figures, references, experiments, or submission checks. |
+| 2 | **Overleaf Sidebar Checklist** | A per-project task list for figures, references, experiments, or submission checks. |
 
 ## Installation
 
@@ -43,7 +39,7 @@ panel in the same sidebar surface.
 │  │  [review]              │                       │
 │  │  [chat]                │                       │
 │  │  [notepad]  ← custom   │                       │
-│  │  [links]    ← custom   │                       │
+│  │  [checklist]← custom   │                       │
 │  │  ...                   │                       │
 │  └───────────────────────┘                       │
 └──────────────────────────────────────────────────┘
@@ -59,7 +55,7 @@ panel in the same sidebar surface.
 │  │  shown when a custom panel is active        │ │
 │  │  ┌────────────────────────────────────────┐ │ │
 │  │  │ panel: Local Notepad                   │ │ │
-│  │  │ panel: Quick Links                     │ │ │
+│  │  │ panel: Checklist                       │ │ │
 │  │  │ …                                      │ │ │
 │  │  └────────────────────────────────────────┘ │ │
 │  └─────────────────────────────────────────────┘ │
@@ -117,7 +113,7 @@ syntax-checked with Node.js:
 ```bash
 node --check "experimental/overleaf/sidebar/_nativeSidebarHost.js"
 node --check "experimental/overleaf/sidebar/Overleaf Sidebar Local Notepad (Experimental)"
-# … and so on for each script
+node --check "experimental/overleaf/sidebar/Overleaf Sidebar Checklist (Experimental)"
 ```
 
 ## Known limitations
@@ -125,11 +121,7 @@ node --check "experimental/overleaf/sidebar/Overleaf Sidebar Local Notepad (Expe
 * The scripts depend on Overleaf's current DOM class names (`.ide-rail-*`,
   `.tab-pane`, etc.). If Overleaf redesigns its sidebar markup the selectors
   will need updating.
-* Compile Insights patches `window.fetch` and `XMLHttpRequest.prototype` to
-  intercept compile requests. Other scripts or extensions that also patch
-  these globals might conflict.
-* The sidebar is only auto-opened (via the file-tree button) when a previously
-  active custom panel needs to be restored. If the sidebar is collapsed and no
-  custom panel was open, the scripts wait passively until the user opens it.
+* The scripts try to reopen the native sidepanel before showing a custom panel,
+  but they still depend on Overleaf's current sidebar toggle controls.
 * All data stays in `localStorage`, so clearing browser data loses notes,
-  checklist items, and compile history.
+  checklist items, and any other locally stored panel state.
