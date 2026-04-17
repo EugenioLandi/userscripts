@@ -131,7 +131,7 @@
     function trackCompileRequest(url) {
         try {
             const absoluteUrl = new URL(String(url), window.location.origin);
-            return /\/compile|\/clsi/i.test(absoluteUrl.pathname);
+            return /\/compile\b|\/clsi\b/i.test(absoluteUrl.pathname);
         } catch {
             return false;
         }
