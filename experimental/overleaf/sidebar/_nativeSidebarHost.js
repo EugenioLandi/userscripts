@@ -96,7 +96,11 @@
     }
 
     function writeJson(key, value) {
-        try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+            // localStorage quota exceeded — silently drop the write
+        }
     }
 
     function formatDateTime(timestamp) {
@@ -113,7 +117,9 @@
         try {
             localStorage.setItem(ACTIVE_KEY, state.activeId || '');
             localStorage.setItem(OPEN_KEY, state.isOpen && state.activeId ? '1' : '0');
-        } catch { /* quota */ }
+        } catch {
+            // localStorage quota exceeded — silently drop the write
+        }
     }
 
     function getPanelApi(panelId) {
@@ -522,7 +528,7 @@
             close.type = 'button';
             close.className = 'experimental-overleaf-native-sidebar-close';
             close.setAttribute('aria-label', 'Close custom sidebar panel');
-            close.textContent = '\u00d7';
+            close.textContent = '×';
             close.addEventListener('click', () => closePanel());
 
             header.append(heading, close);
