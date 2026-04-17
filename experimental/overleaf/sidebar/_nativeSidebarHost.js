@@ -611,7 +611,7 @@
         }
         if (!isSidebarClosed(context)) return context;
 
-        const activeNativeTab = context.tabsWrapper?.querySelector('[role="tab"][aria-selected="true"]:not([' + TAB_ATTR + '])');
+        const activeNativeTab = context.tabsWrapper?.querySelector(`[role="tab"][aria-selected="true"]:not([${TAB_ATTR}])`);
         if (activeNativeTab && isVisible(activeNativeTab)) {
             activeNativeTab.click();
             await wait(SIDEBAR_OPEN_DELAY_MS);
