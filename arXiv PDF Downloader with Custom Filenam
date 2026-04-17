@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         arXiv PDF Downloader with Custom Filename
 // @namespace    https://arxiv.org/
-// @version      3.0.0
+// @version      3.0.1
 // @description  Download arXiv PDFs with a customizable filename, filename preview, and copy-to-clipboard support
 // @match        https://arxiv.org/abs/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/arXiv%20PDF%20Downloader%20with%20Custom%20Filenam
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/arXiv%20PDF%20Downloader%20with%20Custom%20Filenam
 // @grant        GM_xmlhttpRequest
 // @connect      arxiv.org
 // @run-at       document-idle

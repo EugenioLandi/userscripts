@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         GitHub Copilot Model Multipliers
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.2
 // @description  Display premium request multipliers next to Copilot models with improved parsing, caching, and selection badges
 // @author       You
 // @match        https://github.com/copilot*
 // @match        https://github.com/settings/copilot*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/github%20copilot%20model%20multiplier
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      docs.github.com

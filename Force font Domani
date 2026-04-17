@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Force font Domani
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Force a consistent Barlow-based reading font on Domani with a persistent on/off toggle
 // @author       You
 // @match        *://www.editorialedomani.it/*
 // @icon         https://e7.pngegg.com/pngimages/656/766/png-clipart-computer-terminal-computer-icons-bash-others-miscellaneous-angle.png
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Force%20font%20Domani
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Force%20font%20Domani
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
