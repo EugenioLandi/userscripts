@@ -58,6 +58,10 @@
         return match ? match[1] : null;
     }
 
+    function getCurrentProjectStorageId() {
+        return getProjectId() || '';
+    }
+
     function getProjectName() {
         const selectors = [
             '.ide-redesign-toolbar-project-name',
@@ -486,14 +490,14 @@
         state.footerText = '';
         panelDefinition.render(body, getPanelApi(panelDefinition.id));
         footer.textContent = state.footerText;
-        panelRoot.dataset.experimentalOverleafSidebarProjectId = getProjectId() || '';
+        panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectStorageId();
         panelRoot.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         panelRoot.classList.add('is-open');
     }
 
     function shouldRenderPanel(panelRoot, panelDefinition) {
         if (!panelRoot) return true;
-        const currentProjectId = getProjectId() || '';
+        const currentProjectId = getCurrentProjectStorageId();
         const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== currentProjectId) return true;
         if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== currentRenderVersion) return true;
@@ -589,7 +593,10 @@
 
         const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
         if (activePanel) {
-            const activePanelRoot = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || ensureCustomPanel(context, activePanel);
+            let activePanelRoot = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId) || null;
+            if (!activePanelRoot) {
+                activePanelRoot = ensureCustomPanel(context, activePanel);
+            }
             if (shouldRenderPanel(activePanelRoot, activePanel)) {
                 renderPanelContent(context, activePanel);
             }
