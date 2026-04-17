@@ -71,7 +71,7 @@
     }
 
     function formatTimestamp(timestamp) {
-        return new Date(timestamp ?? metadata.timestamp).toLocaleString();
+        return new Date(timestamp).toLocaleString();
     }
 
     function isVisible(element) {
@@ -232,11 +232,11 @@
     }
 
     function badgeTitle() {
-        return `Multiplier source: ${metadata.source}. Last update: ${formatTimestamp()}.`;
+        return `Multiplier source: ${metadata.source}. Last update: ${formatTimestamp(metadata.timestamp)}.`;
     }
 
     function modelsLabelTitle() {
-        return `Model multipliers last updated by the script: ${formatTimestamp()}. Source: ${metadata.source}.`;
+        return `Model multipliers last updated by the script: ${formatTimestamp(metadata.timestamp)}. Source: ${metadata.source}.`;
     }
 
     function ensureBadge(element, attributeName) {
@@ -341,7 +341,6 @@
             '[aria-label*="model" i]',
             '[title*="model" i]',
             'button',
-            'summary',
             '[role="button"]',
             '[role="tab"]',
         ], 'data-cm-badge');

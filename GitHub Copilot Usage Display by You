@@ -25,7 +25,7 @@
     const DISPLAY_HOST_ID = 'copilot-usage-display-host';
 
     let refreshTimer = null;
-    let routeKey = `${location.pathname}${location.search}`;
+    let routeKey = `${location.pathname}${location.search}${location.hash}`;
 
     function normalizeWhitespace(text) {
         return String(text || '').replace(/\s+/g, ' ').trim();
@@ -274,7 +274,7 @@
 
     function watchRouteChanges() {
         const observer = new MutationObserver(() => {
-            const currentRouteKey = `${location.pathname}${location.search}`;
+            const currentRouteKey = `${location.pathname}${location.search}${location.hash}`;
             if (routeKey !== currentRouteKey) {
                 routeKey = currentRouteKey;
                 mountDisplay();
