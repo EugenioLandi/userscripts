@@ -24,6 +24,7 @@
     const DOCS_TABLE_URL = `${DOCS_URL}#model-multipliers`;
     const CACHE_KEY = 'copilot_model_multipliers_v5';
     const CACHE_TTL = 24 * 60 * 60 * 1000;
+    const MAX_DECORATABLE_TEXT_LENGTH = 200;
     // Refresh live data sooner than full expiry so the UI can serve cached values while updating in the background.
     const CACHE_REFRESH_AFTER = 6 * 60 * 60 * 1000;
 
@@ -69,8 +70,8 @@
         return typeof multiplier === 'number' && !Number.isNaN(multiplier) ? `(${multiplier}×)` : '';
     }
 
-    function formatTimestamp(timestamp = metadata.timestamp) {
-        return new Date(timestamp).toLocaleString();
+    function formatTimestamp(timestamp) {
+        return new Date(timestamp ?? metadata.timestamp).toLocaleString();
     }
 
     function isVisible(element) {
@@ -294,7 +295,7 @@
             for (const element of document.querySelectorAll(selector)) {
                 if (seen.has(element) || !isVisible(element)) continue;
                 if (element.closest('[data-cm-docs-link]')) continue;
-                if ((element.textContent || '').trim().length > 200 && !isInteractiveElement(element)) continue;
+                if ((element.textContent || '').trim().length > MAX_DECORATABLE_TEXT_LENGTH && !isInteractiveElement(element)) continue;
                 seen.add(element);
                 result.push(element);
             }

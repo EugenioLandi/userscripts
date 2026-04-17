@@ -118,7 +118,14 @@
         return null;
     }
 
-    async function fetchUsagePercentage() {
+    function requiresSignIn(doc) {
+        return Boolean(
+            doc.querySelector('form[action="/session"]') ||
+            /sign in to github/i.test(doc.body?.textContent || '')
+        );
+    }
+
+    async function fetchUsageState() {
         const response = await fetch(SETTINGS_URL, { credentials: 'include' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
@@ -126,13 +133,17 @@
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
-
-        return (
+        const percentage = (
             findPercentageInProgressBars(doc) ??
             findPercentageInScripts(html) ??
             findPercentageFromFractions(doc.body.textContent) ??
             findPercentageInText(doc.body.textContent)
         );
+
+        return {
+            percentage,
+            requiresSignIn: percentage === null && requiresSignIn(doc),
+        };
     }
 
     function getDisplayTheme(percentage) {
@@ -242,9 +253,12 @@
         setDisplayState('Refreshing…');
 
         try {
-            const percentage = await fetchUsagePercentage();
+            const { percentage, requiresSignIn: signInRequired } = await fetchUsageState();
             if (percentage === null) {
-                setDisplayState('Unavailable', null, 'Usage percentage not found or you are not signed in. Click to retry.');
+                const title = signInRequired
+                    ? 'GitHub sign-in is required to read Copilot usage. Click to retry.'
+                    : 'Usage percentage not found on the Copilot settings page. Click to retry.';
+                setDisplayState('Unavailable', null, title);
                 return;
             }
 

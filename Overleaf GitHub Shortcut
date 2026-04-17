@@ -161,7 +161,7 @@
         const href = target.getAttribute('href');
         if (href && href !== '#') {
             const destination = new URL(href, window.location.origin).toString();
-            window.open(destination, '_blank', 'noopener,noreferrer');
+            window.open(destination, '_blank', 'noopener noreferrer');
             return true;
         }
 
@@ -171,7 +171,7 @@
     function openProjectSettings(shortcutButton) {
         const projectId = getProjectId();
         if (!projectId) return false;
-        window.open(new URL(`/project/${encodeURIComponent(projectId)}/settings`, window.location.origin).toString(), '_blank', 'noopener,noreferrer');
+        window.open(new URL(`/project/${encodeURIComponent(projectId)}/settings`, window.location.origin).toString(), '_blank', 'noopener noreferrer');
         setStatus(shortcutButton, 'Opened project settings');
         return true;
     }
