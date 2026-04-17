@@ -19,6 +19,7 @@
 
     const host = window.__experimentalOverleafNativeSidebarHost;
     const PANEL_ID = 'experimental-overleaf-sidebar-compile-insights';
+    const HISTORY_LIMIT = 15;
 
     function ensureTracker() {
         if (window.__experimentalOverleafSidebarCompileTracker) return window.__experimentalOverleafSidebarCompileTracker;
@@ -41,7 +42,7 @@
 
         function writeHistory(projectId, entries) {
             if (!projectId) return;
-            host.writeJson(storageKey(projectId), entries.slice(0, 15));
+            host.writeJson(storageKey(projectId), entries.slice(0, HISTORY_LIMIT));
         }
 
         function trackRequest(url) {

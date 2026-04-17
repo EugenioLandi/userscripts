@@ -9,6 +9,17 @@
     const PANEL_ATTR = 'data-experimental-overleaf-native-panel';
     const TAB_ATTR = 'data-experimental-overleaf-native-tab';
     const FOOTER_CLASS = 'experimental-overleaf-native-sidebar-footer-slot';
+    const RAIL_MIN_WIDTH = 28;
+    const RAIL_MAX_WIDTH = 112;
+    const RAIL_MIN_HEIGHT = 120;
+    const RAIL_MIN_BUTTONS = 1;
+    const RAIL_MAX_BUTTONS = 24;
+    const PANEL_MIN_WIDTH = 180;
+    const PANEL_MAX_WIDTH = 560;
+    const PANEL_MIN_HEIGHT = 220;
+    const PANEL_MAX_LEFT = 280;
+    const SIDEBAR_OPEN_DELAY_MS = 180;
+    const DOM_SYNC_DEBOUNCE_MS = 120;
 
     const state = {
         panels: new Map(),
@@ -171,7 +182,13 @@
         while (current && current !== document.body) {
             const rect = current.getBoundingClientRect();
             const buttons = [...current.querySelectorAll('button, [role="tab"], [role="button"]')].filter(isVisible);
-            if (rect.width > 28 && rect.width <= 112 && rect.height >= 120 && buttons.length >= 1 && buttons.length <= 24) {
+            if (
+                rect.width > RAIL_MIN_WIDTH
+                && rect.width <= RAIL_MAX_WIDTH
+                && rect.height >= RAIL_MIN_HEIGHT
+                && buttons.length >= RAIL_MIN_BUTTONS
+                && buttons.length <= RAIL_MAX_BUTTONS
+            ) {
                 best = current;
             }
             current = current.parentElement;
@@ -182,7 +199,12 @@
     function getPanelCandidateScore(element) {
         if (!isVisible(element)) return -1;
         const rect = element.getBoundingClientRect();
-        if (rect.width < 180 || rect.width > 560 || rect.height < 220 || rect.left > 280) return -1;
+        if (
+            rect.width < PANEL_MIN_WIDTH
+            || rect.width > PANEL_MAX_WIDTH
+            || rect.height < PANEL_MIN_HEIGHT
+            || rect.left > PANEL_MAX_LEFT
+        ) return -1;
         const text = normalizeText(element.textContent);
         let score = 0;
         if (text.includes('file tree')) score += 8;
@@ -533,7 +555,7 @@
         if (context.panelContainer) return context;
         if (context.fileTreeButton) {
             context.fileTreeButton.click();
-            await wait(180);
+            await wait(SIDEBAR_OPEN_DELAY_MS);
             context = resolveContext();
         }
         return context;
@@ -605,7 +627,7 @@
             if (state.lastHref !== global.location.href) {
                 state.lastHref = global.location.href;
             }
-            scheduleSync(120);
+            scheduleSync(DOM_SYNC_DEBOUNCE_MS);
         });
         state.observer.observe(document.documentElement, { childList: true, subtree: true });
         global.addEventListener('popstate', () => scheduleSync(0));
