@@ -15,6 +15,7 @@
     const NATIVE_TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
     const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
     const NATIVE_FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
+    const SIDEBAR_TOGGLE_BUTTON_SELECTOR = '.horizontal-resize-handle .custom-toggler';
     const SIDEBAR_OPEN_DELAY_MS = 200;
     const DOM_SYNC_DEBOUNCE_MS = 150;
 
@@ -151,7 +152,8 @@
         const templateButton = fileTreeButton || getNativeTabs(tabsWrapper)[0] || null;
         const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
         const railContent = tabContent?.closest('.ide-rail-content') || null;
-        return { tabsWrapper, fileTreeButton, templateButton, tabContent, railContent };
+        const sidebarToggleButton = document.querySelector(SIDEBAR_TOGGLE_BUTTON_SELECTOR);
+        return { tabsWrapper, fileTreeButton, templateButton, tabContent, railContent, sidebarToggleButton };
     }
 
     function ensurePanelContainer(railContent) {
@@ -194,12 +196,24 @@
             /* ---- tab button icons ---- */
             [${TAB_ATTR}] {
                 position: relative;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
                 transition: background-color 0.15s ease, box-shadow 0.15s ease;
             }
-            [${TAB_ATTR}] svg {
+            [${TAB_ATTR}] .ide-rail-tab-link-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
+                line-height: 1;
+            }
+            [${TAB_ATTR}] .ide-rail-tab-link-icon svg {
                 width: 20px;
                 height: 20px;
                 display: block;
+                flex: 0 0 auto;
                 pointer-events: none;
             }
 
@@ -395,8 +409,11 @@
         wrapper.innerHTML = iconMarkup.trim();
         const icon = wrapper.firstElementChild;
         if (!icon) return;
-        icon.classList.add('ide-rail-tab-link-icon');
-        button.replaceChildren(icon);
+        const iconSlot = document.createElement('span');
+        iconSlot.className = 'ide-rail-tab-link-icon';
+        iconSlot.setAttribute('aria-hidden', 'true');
+        iconSlot.appendChild(icon);
+        button.replaceChildren(iconSlot);
     }
 
     function createCustomTabButton(panel, templateButton) {
@@ -405,7 +422,6 @@
         button.setAttribute(TAB_ATTR, panel.id);
         button.dataset.panelId = panel.id;
         button.dataset.rrUiEventKey = panel.id;
-        button.title = panel.title;
         button.setAttribute('aria-label', panel.title);
         button.setAttribute('type', 'button');
         button.setAttribute('role', 'tab');
@@ -474,15 +490,16 @@
 
         const fileTreeButton = context.fileTreeButton;
         const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
-        const activeNativeTab = context.tabsWrapper?.querySelector('[role="tab"][aria-selected="true"]');
+        const activeNativeTab = context.tabsWrapper?.querySelector(`[role="tab"][aria-selected="true"]:not([${TAB_ATTR}])`);
         const activeStyles = activeNativeTab ? getComputedStyle(activeNativeTab) : null;
 
         customButtons.forEach(button => {
-            button.style.color = buttonStyles?.color || '';
-            button.style.background = 'transparent';
-            button.style.boxShadow = 'none';
+            button.style.removeProperty('color');
+            button.style.removeProperty('background');
+            button.style.removeProperty('background-color');
+            button.style.removeProperty('box-shadow');
             if (state.isOpen && button.dataset.panelId === state.activeId) {
-                button.style.background = activeStyles?.backgroundColor || 'rgba(25, 135, 84, 0.18)';
+                button.style.backgroundColor = activeStyles?.backgroundColor || 'rgba(25, 135, 84, 0.18)';
                 button.style.color = activeStyles?.color || buttonStyles?.color || '';
                 button.style.boxShadow = activeStyles?.boxShadow || 'none';
             }
@@ -570,11 +587,33 @@
         return !body || !body.hasChildNodes();
     }
 
+    function isSidebarClosed(context) {
+        const label = context.sidebarToggleButton?.getAttribute('aria-label') || '';
+        return !context.tabContent || /show the panel/i.test(label) || context.sidebarToggleButton?.classList.contains('custom-toggler-closed');
+    }
+
     async function ensureSidebarOpen() {
         let context = resolveContext();
-        if (context.tabContent) return context;
-        if (state.isOpen && state.activeId && context.fileTreeButton && isVisible(context.fileTreeButton)) {
+        if (!state.isOpen || !state.activeId) return context;
+        if (!isSidebarClosed(context)) return context;
+
+        if (context.sidebarToggleButton && isVisible(context.sidebarToggleButton)) {
+            context.sidebarToggleButton.click();
+            await wait(SIDEBAR_OPEN_DELAY_MS);
+            context = resolveContext();
+        }
+        if (!isSidebarClosed(context)) return context;
+
+        if (context.fileTreeButton && isVisible(context.fileTreeButton)) {
             context.fileTreeButton.click();
+            await wait(SIDEBAR_OPEN_DELAY_MS);
+            context = resolveContext();
+        }
+        if (!isSidebarClosed(context)) return context;
+
+        const activeNativeTab = context.tabsWrapper?.querySelector('[role="tab"][aria-selected="true"]:not([' + TAB_ATTR + '])');
+        if (activeNativeTab && isVisible(activeNativeTab)) {
+            activeNativeTab.click();
             await wait(SIDEBAR_OPEN_DELAY_MS);
             context = resolveContext();
         }
