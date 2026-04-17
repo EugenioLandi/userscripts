@@ -106,7 +106,7 @@
         } catch (error) {
             console.error('[Overleaf downloads]', error);
             setStatus(anchor, `Download failed (${error.message})`, true);
-            window.open(url, '_blank', 'noopener');
+            window.open(url, '_blank', 'noopener,noreferrer');
         }
     }
 

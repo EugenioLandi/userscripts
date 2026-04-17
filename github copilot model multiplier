@@ -282,9 +282,6 @@
             '[aria-label="Models"]',
             'main summary',
             'main label',
-            'main h1',
-            'main h2',
-            'main h3',
         ];
 
         for (const element of document.querySelectorAll(labelSelectors.join(', '))) {
