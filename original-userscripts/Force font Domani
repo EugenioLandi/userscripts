@@ -1,0 +1,16 @@
+// ==UserScript==
+// @name         Force font
+// @namespace    http://tampermonkey.net/
+// @version      0.1
+// @description  Sets the font on all websites to Consolas
+// @author       You
+// @match        *://www.editorialedomani.it/*
+// @icon         https://e7.pngegg.com/pngimages/656/766/png-clipart-computer-terminal-computer-icons-bash-others-miscellaneous-angle.png
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    Array.prototype.forEach.call(document.getElementsByTagName("*"), function(e){e.style.fontFamily ="Barlow"});
+})();

@@ -1,0 +1,272 @@
+// ==UserScript==
+// @name         GitHub Copilot Model Multipliers
+// @namespace    http://tampermonkey.net/
+// @version      4.1
+// @description  Display premium request multiplier next to each model in Copilot dropdown, live from GitHub Docs
+// @author       You
+// @match        https://github.com/copilot*
+// @run-at       document-idle
+// @grant        GM_xmlhttpRequest
+// @connect      docs.github.com
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // The docs page IS server-side rendered, so a direct HTML fetch works fine.
+    const DOCS_URL  = 'https://docs.github.com/en/copilot/concepts/billing/copilot-requests';
+    const CACHE_KEY = 'copilot_model_multipliers_v4_1';
+    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 h
+
+    // Used if fetch or parsing fails.
+    const FALLBACK_MULTIPLIERS = {
+        'claude haiku 4.5':            0.33,
+        'claude opus 4.5':             3,
+        'claude opus 4.6':             3,
+        'claude opus 4.6 (fast mode)': 30,
+        'claude sonnet 4':             1,
+        'claude sonnet 4.5':           1,
+        'claude sonnet 4.6':           1,
+        'gemini 2.5 pro':              1,
+        'gemini 3 flash':              0.33,
+        'gemini 3 pro':                1,
+        'gemini 3.1 pro':              1,
+        'gpt-4.1':                     0,
+        'gpt-4o':                      0,
+        'gpt-5 mini':                  0,
+        'gpt-5.1':                     1,
+        'gpt-5.1-codex':               1,
+        'gpt-5.1-codex-mini':          0.33,
+        'gpt-5.1-codex-max':           1,
+        'gpt-5.2':                     1,
+        'gpt-5.2-codex':               1,
+        'gpt-5.3-codex':               1,
+        'gpt-5.4':                     1,
+        'grok code fast 1':            0.25,
+        'raptor mini':                 0,
+    };
+
+    let MODEL_MULTIPLIERS = { ...FALLBACK_MULTIPLIERS };
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    function normalize(name) {
+        if (!name) return '';
+        return name
+            .toLowerCase()
+            .replace(/\s*\(preview\)\s*/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function formatMultiplier(mult) {
+        if (typeof mult !== 'number' || Number.isNaN(mult)) return '';
+        return `(${mult}\u00d7)`;
+    }
+
+    // ── Cache ──────────────────────────────────────────────────────────────────
+
+    function loadCache() {
+        try {
+            const raw = localStorage.getItem(CACHE_KEY);
+            if (!raw) return null;
+            const { timestamp, data } = JSON.parse(raw);
+            if (Date.now() - timestamp > CACHE_TTL) return null;
+            if (!data || Object.keys(data).length === 0) return null;
+            return data;
+        } catch { return null; }
+    }
+
+    function saveCache(data) {
+        try {
+            localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data }));
+        } catch { /* quota full — skip */ }
+    }
+
+    // ── Fetch via GM (bypasses CORS) ───────────────────────────────────────────
+
+    function gmFetch(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method  : 'GET',
+                url,
+                headers : { Accept: 'text/html' },
+                onload  : r => (r.status >= 200 && r.status < 300)
+                    ? resolve(r.responseText)
+                    : reject(new Error(`HTTP ${r.status}`)),
+                onerror  : err => reject(err),
+                ontimeout: ()  => reject(new Error('timeout')),
+            });
+        });
+    }
+
+    // ── Parse the HTML table ───────────────────────────────────────────────────
+
+    function findMultipliersTable(doc) {
+        // FIX: GitHub uses "Model multipliers for paid plans" as the heading,
+        // not just "Model multipliers". We match loosely: heading must contain
+        // "model" AND "multiplier" (case-insensitive).
+        const headings = [...doc.querySelectorAll('h1, h2, h3, h4, h5, h6')];
+        const heading  = headings.find(h => {
+            const t = (h.textContent || '').toLowerCase();
+            return t.includes('model') && t.includes('multiplier');
+        });
+
+        if (!heading) return null;
+
+        // Walk forward until we hit a <table> or the next heading of equal/higher level
+        const rank  = parseInt(heading.tagName[1], 10);
+        let   node  = heading.nextElementSibling;
+        while (node) {
+            if (node.tagName === 'TABLE') return node;
+            // Stop if we've hit a same/higher-level heading
+            if (/^H[1-6]$/.test(node.tagName) && parseInt(node.tagName[1], 10) <= rank) break;
+            // Recurse into wrapper divs (GitHub often wraps content in <div>)
+            const inner = node.querySelector('table');
+            if (inner) return inner;
+            node = node.nextElementSibling;
+        }
+        return null;
+    }
+
+    function parseMultiplierValue(text) {
+        const cleaned = (text || '').trim();
+        if (/not applicable|n\/a/i.test(cleaned)) return null;
+        const match = cleaned.match(/\d+(?:\.\d+)?/);
+        if (!match) return null;
+        const n = Number(match[0]);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    function parseMultipliersFromHtml(html) {
+        const doc   = new DOMParser().parseFromString(html, 'text/html');
+        const table = findMultipliersTable(doc);
+
+        if (!table) throw new Error('Model multipliers table not found in page HTML');
+
+        const result = {};
+        for (const row of table.querySelectorAll('tr')) {
+            const cells = [...row.querySelectorAll('th, td')];
+            if (cells.length < 2) continue;
+
+            const rawName = (cells[0].textContent || '').trim();
+            const rawVal  = (cells[1].textContent || '').trim();
+
+            // Skip header row
+            if (/model/i.test(rawName) && /multiplier/i.test(rawVal)) continue;
+            if (!rawName) continue;
+
+            const name = normalize(rawName);
+            const val  = parseMultiplierValue(rawVal);
+            if (name && val !== null) result[name] = val;
+        }
+
+        if (Object.keys(result).length === 0) throw new Error('Parsed table was empty');
+        return result;
+    }
+
+    // ── Load (cache → fetch → fallback) ───────────────────────────────────────
+
+    async function loadMultipliers() {
+        const cached = loadCache();
+        if (cached) { MODEL_MULTIPLIERS = cached; return; }
+
+        try {
+            const html   = await gmFetch(DOCS_URL);
+            const parsed = parseMultipliersFromHtml(html);
+            MODEL_MULTIPLIERS = parsed;
+            saveCache(parsed);
+        } catch (err) {
+            console.warn('[Copilot Multipliers] Live fetch failed, using fallback:', err);
+            MODEL_MULTIPLIERS = { ...FALLBACK_MULTIPLIERS };
+        }
+    }
+
+    // ── Lookup ─────────────────────────────────────────────────────────────────
+
+    function getMultiplier(rawName) {
+        if (!rawName) return null;
+        const name = normalize(rawName);
+
+        if (Object.prototype.hasOwnProperty.call(MODEL_MULTIPLIERS, name)) {
+            return MODEL_MULTIPLIERS[name];
+        }
+
+        let best = null, bestLen = 0;
+        for (const key of Object.keys(MODEL_MULTIPLIERS)) {
+            if (name.includes(key) || key.includes(name)) {
+                if (key.length > bestLen) { bestLen = key.length; best = MODEL_MULTIPLIERS[key]; }
+            }
+        }
+        return best;
+    }
+
+    // ── DOM injection ──────────────────────────────────────────────────────────
+
+    const SELECTORS = [
+        '.prc-ActionList-ItemLabel-81ohH',
+        '.ActionListItem-label',
+        '.ActionList-content',
+        '[role="menuitem"]',
+        '[role="option"]',
+        'button[role="menuitem"]',
+        'div[role="menuitem"]',
+    ];
+
+    function extractModelName(el) {
+        const spans = [...el.querySelectorAll('span')]
+            .map(s => s.textContent.trim()).filter(Boolean);
+        if (spans.length > 0) return spans.sort((a, b) => b.length - a.length)[0];
+        return el.textContent.trim();
+    }
+
+    function addMultipliersToDropdown() {
+        const seen = new Set();
+        const els  = [];
+        for (const sel of SELECTORS) {
+            for (const el of document.querySelectorAll(sel)) {
+                if (!seen.has(el)) { seen.add(el); els.push(el); }
+            }
+        }
+
+        for (const el of els) {
+            const modelName  = extractModelName(el);
+            if (!modelName) continue;
+
+            const multiplier = getMultiplier(modelName);
+            const badge      = el.querySelector('[data-cm-badge]');
+
+            if (multiplier === null) { badge?.remove(); continue; }
+
+            const text = formatMultiplier(multiplier);
+            if (!text) continue;
+
+            if (badge) {
+                badge.textContent = ` ${text}`;
+            } else {
+                const span = document.createElement('span');
+                span.dataset.cmBadge = 'true';
+                span.style.cssText   =
+                    'margin-left:8px;color:#6e7781;font-size:.9em;font-weight:normal;white-space:nowrap';
+                span.textContent = ` ${text}`;
+                el.appendChild(span);
+            }
+        }
+    }
+
+    // ── Boot ───────────────────────────────────────────────────────────────────
+
+    async function init() {
+        await loadMultipliers();
+        addMultipliersToDropdown();
+
+        const obs = new MutationObserver(() => {
+            clearTimeout(obs._t);
+            obs._t = setTimeout(addMultipliersToDropdown, 120);
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+        document.addEventListener('click', () => setTimeout(addMultipliersToDropdown, 120));
+    }
+
+    init();
+})();

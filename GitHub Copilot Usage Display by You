@@ -1,218 +1,242 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Display Copilot Pro usage percentage on the Copilot page
+// @version      2.0
+// @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
+    if (window.__copilotUsageDisplayInitialized) return;
+    window.__copilotUsageDisplayInitialized = true;
+
     const SETTINGS_URL = 'https://github.com/settings/copilot/features';
-    const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    const REFRESH_INTERVAL = 5 * 60 * 1000;
+    const DISPLAY_ID = 'copilot-usage-display';
 
-    async function fetchUsagePercentage() {
-        try {
-            const response = await fetch(SETTINGS_URL);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const html = await response.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
+    let refreshTimer = null;
+    let routeKey = location.pathname;
 
-            // Look for usage percentage in various possible formats
-            // Common patterns: "X.X%", "XX.X%", or text containing these
-            const bodyText = doc.body.textContent;
-
-            // Try to find percentage near "premium" or "usage" keywords
-            const usageRegex = /(\d+\.?\d*)\s*%/g;
-            const matches = [...bodyText.matchAll(usageRegex)];
-
-            // Look for the most likely usage percentage
-            // Usually the one near "premium", "usage", "requests", or "limit"
-            for (const match of matches) {
-                const index = match.index;
-                const context = bodyText.substring(Math.max(0, index - 100), Math.min(bodyText.length, index + 100)).toLowerCase();
-
-                if (context.includes('premium') || context.includes('usage') ||
-                    context.includes('requests') || context.includes('limit')) {
-                    return match[1];
-                }
-            }
-
-            // Fallback: return first percentage found if no context match
-            if (matches.length > 0) {
-                return matches[0][1];
-            }
-
-            return null;
-        } catch (error) {
-            console.error('Error fetching Copilot usage:', error);
-            return null;
-        }
+    function normalizeWhitespace(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim();
     }
 
-    function createUsageDisplay() {
-        const container = document.createElement('div');
-        container.id = 'copilot-usage-display';
-        container.style.cssText = `
-            display: inline-flex;
-            align-items: center;
-            padding: 8px 12px;
-            margin-left: 8px;
-            height: 32px;
-            background-color: #f6f8fa;
-            border: 1px solid #d0d7de;
-            border-radius: 6px;
-            font-size: 14px;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            color: #24292f;
-            white-space: nowrap;
-            cursor: pointer;
-            user-select: none;
-            transition: background-color 0.2s;
-        `;
+    function clampPercentage(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return Math.max(0, Math.min(100, Math.round(numeric)));
+    }
 
-        container.innerHTML = `
-            <span id="copilot-usage-text">Loading...</span>
-        `;
+    function findPercentageInScripts(html) {
+        const patterns = [
+            /"usagePercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"percentUsed"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"premiumRequestsUsedPercentage"\s*:\s*(\d+(?:\.\d+)?)/i,
+            /"quotaPercent"\s*:\s*(\d+(?:\.\d+)?)/i,
+        ];
 
-        // Add hover effect
-        container.addEventListener('mouseenter', () => {
-            container.style.backgroundColor = '#eaeef2';
-        });
-        container.addEventListener('mouseleave', () => {
-            const currentBg = container.style.backgroundColor;
-            if (currentBg === 'rgb(234, 238, 242)') { // hover color
-                const usageText = document.getElementById('copilot-usage-text');
-                const percentage = parseFloat(usageText?.textContent || '0');
-                if (percentage >= 90) {
-                    container.style.backgroundColor = '#fff1f0';
-                } else if (percentage >= 75) {
-                    container.style.backgroundColor = '#fff8e8';
-                } else {
-                    container.style.backgroundColor = '#f6f8fa';
-                }
+        for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match) return clampPercentage(match[1]);
+        }
+
+        return null;
+    }
+
+    function scoreContext(context) {
+        let score = 0;
+        if (/premium/.test(context)) score += 5;
+        if (/request/.test(context)) score += 3;
+        if (/usage|limit|quota/.test(context)) score += 2;
+        if (/monthly|billing|included/.test(context)) score += 1;
+        if (/remaining/.test(context)) score += 1;
+        return score;
+    }
+
+    function findPercentageInText(text) {
+        const normalized = normalizeWhitespace(text).toLowerCase();
+        const regex = /(\d+(?:\.\d+)?)\s*%/g;
+        let best = null;
+
+        for (const match of normalized.matchAll(regex)) {
+            const index = match.index || 0;
+            const context = normalized.slice(Math.max(0, index - 120), Math.min(normalized.length, index + 120));
+            const score = scoreContext(context);
+            if (!best || score > best.score) {
+                best = { score, value: match[1] };
             }
-        });
+        }
 
-        // Add click handler for manual refresh
-        container.addEventListener('click', async () => {
-            const usageText = document.getElementById('copilot-usage-text');
-            if (!usageText) return;
+        return best ? clampPercentage(best.value) : null;
+    }
 
-            const originalText = usageText.textContent;
-            usageText.textContent = 'Refreshing...';
-            container.style.opacity = '0.7';
+    function findPercentageInProgressBars(doc) {
+        const candidates = [...doc.querySelectorAll('[role="progressbar"][aria-valuenow]')];
+        for (const el of candidates) {
+            const context = normalizeWhitespace(el.closest('section, div, article')?.textContent || el.textContent).toLowerCase();
+            if (!/premium|request|usage|limit|quota/.test(context)) continue;
+            const value = clampPercentage(el.getAttribute('aria-valuenow'));
+            if (value !== null) return value;
+        }
+        return null;
+    }
 
-            await updateUsage();
+    async function fetchUsagePercentage() {
+        const response = await fetch(SETTINGS_URL, { credentials: 'include' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
 
-            container.style.opacity = '1';
-        });
+        const html = await response.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
 
-        container.title = 'Click to refresh usage';
+        return (
+            findPercentageInProgressBars(doc) ??
+            findPercentageInScripts(html) ??
+            findPercentageInText(doc.body.textContent)
+        );
+    }
 
+    function getDisplayTheme(percentage) {
+        if (percentage >= 90) {
+            return {
+                background: 'var(--color-danger-subtle, #fff1f0)',
+                border: 'var(--color-danger-muted, #ff818266)',
+                text: 'var(--color-danger-fg, #d1242f)',
+            };
+        }
+        if (percentage >= 75) {
+            return {
+                background: 'var(--color-attention-subtle, #fff8e8)',
+                border: 'var(--color-attention-muted, #d4a72c66)',
+                text: 'var(--color-attention-fg, #9a6700)',
+            };
+        }
+        return {
+            background: 'var(--color-canvas-subtle, #f6f8fa)',
+            border: 'var(--color-border-default, #d0d7de)',
+            text: 'var(--color-fg-default, #24292f)',
+        };
+    }
+
+    function ensureDisplay() {
+        let container = document.getElementById(DISPLAY_ID);
+        if (container) return container;
+
+        container = document.createElement('button');
+        container.id = DISPLAY_ID;
+        container.type = 'button';
+        container.style.cssText = [
+            'display:inline-flex',
+            'align-items:center',
+            'gap:8px',
+            'padding:6px 10px',
+            'margin-left:8px',
+            'border-radius:999px',
+            'border:1px solid var(--color-border-default, #d0d7de)',
+            'background:var(--color-canvas-subtle, #f6f8fa)',
+            'font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif',
+            'cursor:pointer',
+            'white-space:nowrap',
+        ].join(';');
+
+        container.innerHTML = '<span data-role="label">Premium usage</span><span data-role="value">Loading…</span>';
+        container.title = 'Click to refresh';
+        container.addEventListener('click', () => updateUsage(true));
         return container;
     }
 
-    async function updateUsage() {
-        const usageText = document.getElementById('copilot-usage-text');
-        if (!usageText) return;
+    function findInsertionPoint() {
+        return (
+            document.querySelector('[data-testid="copilot-subpage-nav"]') ||
+            document.querySelector('main h1')?.parentElement ||
+            document.querySelector('header nav') ||
+            document.querySelector('header')
+        );
+    }
 
-        const percentage = await fetchUsagePercentage();
-
-        if (percentage !== null) {
-            usageText.textContent = `${percentage}%`;
-
-            // Color code based on usage
-            const value = parseFloat(percentage);
-            const container = document.getElementById('copilot-usage-display');
-            if (value >= 90) {
-                container.style.backgroundColor = '#fff1f0';
-                container.style.borderColor = '#ffa399';
-                container.style.color = '#d1242f';
-            } else if (value >= 75) {
-                container.style.backgroundColor = '#fff8e8';
-                container.style.borderColor = '#ffc933';
-                container.style.color = '#7d4e00';
-            } else {
-                container.style.backgroundColor = '#f6f8fa';
-                container.style.borderColor = '#d0d7de';
-                container.style.color = '#24292f';
+    function mountDisplay() {
+        const insertionPoint = findInsertionPoint();
+        if (!insertionPoint) return;
+        const display = ensureDisplay();
+        if (!display.isConnected) {
+            if (getComputedStyle(insertionPoint).display === 'block') {
+                insertionPoint.style.display = 'flex';
+                insertionPoint.style.alignItems = 'center';
+                insertionPoint.style.flexWrap = 'wrap';
+                insertionPoint.style.gap = '8px';
             }
-        } else {
-            usageText.textContent = 'N/A';
+            insertionPoint.appendChild(display);
         }
     }
 
-    function insertUsageDisplay() {
-        // Wait for the page to load and find a good insertion point
-        const checkAndInsert = () => {
-            // Try multiple potential insertion points in order of preference
+    function setDisplayState(text, percentage = null, title = 'Click to refresh') {
+        const display = ensureDisplay();
+        const value = display.querySelector('[data-role="value"]');
+        value.textContent = text;
+        display.title = title;
 
-            // 1. Look for header navigation area
-            const headerNav = document.querySelector('header nav') ||
-                            document.querySelector('header .Header-item') ||
-                            document.querySelector('[data-target="nav-list.firstItem"]');
-
-            // 2. Look for main header
-            const header = document.querySelector('header') ||
-                          document.querySelector('.Header');
-
-            // 3. Look for any top-level navigation
-            const topNav = document.querySelector('.UnderlineNav') ||
-                          document.querySelector('[role="navigation"]');
-
-            const insertionPoint = headerNav || header || topNav;
-
-            if (insertionPoint && !document.getElementById('copilot-usage-display')) {
-                const usageDisplay = createUsageDisplay();
-
-                // If it's a nav element, append to it
-                if (insertionPoint.tagName === 'NAV' || insertionPoint.classList.contains('Header-item')) {
-                    insertionPoint.appendChild(usageDisplay);
-                } else {
-                    // Otherwise insert at the end of the header
-                    insertionPoint.style.display = 'flex';
-                    insertionPoint.style.alignItems = 'center';
-                    insertionPoint.appendChild(usageDisplay);
-                }
-
-                updateUsage();
-                setInterval(updateUsage, REFRESH_INTERVAL);
-                return true;
-            }
-            return false;
-        };
-
-        // Try immediately
-        if (checkAndInsert()) return;
-
-        // If not found, use MutationObserver to wait for DOM changes
-        const observer = new MutationObserver((mutations, obs) => {
-            if (checkAndInsert()) {
-                obs.disconnect();
-            }
-        });
-
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        // Stop trying after 10 seconds
-        setTimeout(() => observer.disconnect(), 10000);
+        const theme = getDisplayTheme(percentage ?? 0);
+        display.style.background = percentage === null ? 'var(--color-canvas-subtle, #f6f8fa)' : theme.background;
+        display.style.borderColor = percentage === null ? 'var(--color-border-default, #d0d7de)' : theme.border;
+        display.style.color = percentage === null ? 'var(--color-fg-default, #24292f)' : theme.text;
+        display.style.opacity = text === 'Refreshing…' ? '0.75' : '1';
     }
 
-    // Start the script
+    async function updateUsage(force = false) {
+        mountDisplay();
+        const display = ensureDisplay();
+        if (display.dataset.loading === '1' && !force) return;
+
+        display.dataset.loading = '1';
+        setDisplayState('Refreshing…');
+
+        try {
+            const percentage = await fetchUsagePercentage();
+            if (percentage === null) {
+                setDisplayState('Unavailable', null, 'Usage percentage not found. Click to retry.');
+                return;
+            }
+
+            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            setDisplayState(`${percentage}% • ${timestamp}`, percentage, `Last updated at ${timestamp}. Click to refresh.`);
+        } catch (error) {
+            console.error('[Copilot Usage Display] Failed to refresh usage:', error);
+            setDisplayState('Error', null, `${error.message}. Click to retry.`);
+        } finally {
+            display.dataset.loading = '0';
+        }
+    }
+
+    function watchRouteChanges() {
+        const observer = new MutationObserver(() => {
+            if (routeKey !== location.pathname) {
+                routeKey = location.pathname;
+                mountDisplay();
+                updateUsage(true);
+            } else {
+                mountDisplay();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    function init() {
+        mountDisplay();
+        updateUsage(true);
+        clearInterval(refreshTimer);
+        refreshTimer = setInterval(() => updateUsage(), REFRESH_INTERVAL);
+        watchRouteChanges();
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', insertUsageDisplay);
+        document.addEventListener('DOMContentLoaded', init, { once: true });
     } else {
-        insertUsageDisplay();
+        init();
     }
 })();

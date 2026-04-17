@@ -1,78 +1,209 @@
 // ==UserScript==
 // @name         Overleaf Compile Timer
 // @namespace    http://tampermonkey.net/
-// @version      2.2
-// @description  Mostra tempo di compilazione
+// @version      3.0
+// @description  Track Overleaf compile durations with a live timer and last-compile summary badge
 // @match        https://www.overleaf.com/project/*
 // @grant        none
+// @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
-    console.log('[Timer] Script avviato');
+    if (window.__overleafCompileTimerInitialized) return;
+    window.__overleafCompileTimerInitialized = true;
 
-    let startTime = null;
+    const BADGE_ID = 'overleaf-compile-timer-badge';
+    const STATE = {
+        active: false,
+        startTime: 0,
+        lastDuration: null,
+        pendingRequests: 0,
+        tickTimer: null,
+    };
 
-    // Aspetta che la pagina sia pronta
-    setTimeout(() => {
-        console.log('[Timer] Cerco elementi...');
+    function formatSeconds(ms) {
+        return `${(ms / 1000).toFixed(2)}s`;
+    }
 
-        // Cerca il bottone recompile
-        const recompileBtn = Array.from(document.querySelectorAll('button'))
-            .find(b => b.textContent.includes('Recompile'));
+    function getCompileButton() {
+        return [...document.querySelectorAll('button')].find(button => {
+            const label = `${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`.toLowerCase();
+            return /recompile|compile/.test(label);
+        }) || null;
+    }
 
-        if (!recompileBtn) {
-            console.log('[Timer] Bottone Recompile non trovato!');
+    function buttonLooksBusy(button) {
+        if (!button) return false;
+        const label = `${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`.toLowerCase();
+        return button.disabled || button.getAttribute('aria-busy') === 'true' || /compiling|queued|running/.test(label) || /loading|busy|spinning/.test(button.className);
+    }
+
+    function ensureBadge() {
+        const button = getCompileButton();
+        if (!button?.parentElement) return null;
+
+        let badge = document.getElementById(BADGE_ID);
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.id = BADGE_ID;
+            badge.style.cssText = [
+                'display:inline-flex',
+                'align-items:center',
+                'margin-left:6px',
+                'padding:2px 6px',
+                'border-radius:999px',
+                'background:#f6f8fa',
+                'border:1px solid #d0d7de',
+                'font:600 11px/1 system-ui,sans-serif',
+                'color:#24292f',
+                'white-space:nowrap',
+            ].join(';');
+        }
+
+        if (badge.parentElement !== button.parentElement) {
+            button.parentElement.insertBefore(badge, button.nextSibling);
+        }
+
+        return badge;
+    }
+
+    function render() {
+        const badge = ensureBadge();
+        if (!badge) return;
+
+        if (STATE.active) {
+            badge.textContent = `⏱ ${formatSeconds(Date.now() - STATE.startTime)}`;
+            badge.title = 'Compile in progress';
+            badge.style.background = '#fff8e8';
+            badge.style.borderColor = '#d4a72c66';
+            badge.style.color = '#7d4e00';
             return;
         }
 
-        console.log('[Timer] Bottone trovato:', recompileBtn);
-
-        // Trova il nodo di testo dentro il bottone
-        function updateButtonText(newText) {
-            const walker = document.createTreeWalker(recompileBtn, NodeFilter.SHOW_TEXT);
-            let node;
-            while (node = walker.nextNode()) {
-                if (node.textContent.includes('Recompile') || node.textContent.includes('s')) {
-                    node.textContent = newText;
-                    break;
-                }
-            }
+        if (STATE.lastDuration !== null) {
+            badge.textContent = `⏱ ${formatSeconds(STATE.lastDuration)}`;
+            badge.title = 'Last compile duration';
+            badge.style.background = '#eef4ff';
+            badge.style.borderColor = '#80a6ff66';
+            badge.style.color = '#1f4db8';
+            return;
         }
 
-        // Imposta timer iniziale
-        updateButtonText('Recompile');
+        badge.textContent = '⏱';
+        badge.title = 'Compile timer ready';
+        badge.style.background = '#f6f8fa';
+        badge.style.borderColor = '#d0d7de';
+        badge.style.color = '#24292f';
+    }
 
-        // Intercetta click
-        recompileBtn.addEventListener('click', () => {
-            console.log('[Timer] Click rilevato!');
-            startTime = Date.now();
-            updateButtonText('Recompile ...');
+    function startTicker() {
+        clearInterval(STATE.tickTimer);
+        STATE.tickTimer = setInterval(render, 100);
+    }
 
-            // Controlla ogni 100ms se è finita
-            const checker = setInterval(() => {
-                console.log('[Timer] Check:', (Date.now() - startTime)/1000);
+    function stopTicker() {
+        clearInterval(STATE.tickTimer);
+        STATE.tickTimer = null;
+    }
 
-                if (Date.now() - startTime > 1000) {
-                    const elapsed = (Date.now() - startTime) / 1000;
-                    updateButtonText(`Recompile ${elapsed.toFixed(2)}s`);
-                    console.log('[Timer] Finito:', elapsed);
-                    clearInterval(checker);
-                    startTime = null;
+    function beginCompile() {
+        if (!STATE.active) {
+            STATE.active = true;
+            STATE.startTime = Date.now();
+            startTicker();
+        }
+        render();
+    }
+
+    function completeCompile() {
+        if (!STATE.active) return;
+        STATE.lastDuration = Date.now() - STATE.startTime;
+        STATE.active = false;
+        STATE.startTime = 0;
+        stopTicker();
+        render();
+    }
+
+    function trackCompileRequest(url) {
+        try {
+            const absoluteUrl = new URL(String(url), window.location.origin);
+            return /\/compile\b|\/clsi\b/i.test(absoluteUrl.pathname);
+        } catch {
+            return false;
+        }
+    }
+
+    function attachNetworkTracking() {
+        const originalFetch = window.fetch;
+        window.fetch = async function (...args) {
+            const requestUrl = args[0] instanceof Request ? args[0].url : args[0];
+            const tracked = trackCompileRequest(requestUrl);
+            if (tracked) {
+                STATE.pendingRequests += 1;
+                beginCompile();
+            }
+
+            try {
+                return await originalFetch.apply(this, args);
+            } finally {
+                if (tracked) {
+                    STATE.pendingRequests = Math.max(0, STATE.pendingRequests - 1);
+                    if (STATE.pendingRequests === 0) completeCompile();
                 }
-            }, 100);
+            }
+        };
 
-            // Timeout sicurezza
-            setTimeout(() => {
-                if (startTime) {
-                    const elapsed = (Date.now() - startTime) / 1000;
-                    updateButtonText(`Recompile ${elapsed.toFixed(2)}s`);
-                    clearInterval(checker);
-                }
-            }, 30000);
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            this.__compileTimerTracked = trackCompileRequest(url);
+            return originalOpen.call(this, method, url, ...rest);
+        };
+
+        XMLHttpRequest.prototype.send = function (...args) {
+            if (this.__compileTimerTracked) {
+                STATE.pendingRequests += 1;
+                beginCompile();
+                const finalize = () => {
+                    this.removeEventListener('loadend', finalize);
+                    STATE.pendingRequests = Math.max(0, STATE.pendingRequests - 1);
+                    if (STATE.pendingRequests === 0) completeCompile();
+                };
+                this.addEventListener('loadend', finalize, { once: true });
+            }
+            return originalSend.apply(this, args);
+        };
+    }
+
+    function attachButtonFallback() {
+        const observer = new MutationObserver(() => {
+            const button = getCompileButton();
+            ensureBadge();
+            if (!button || button.dataset.compileTimerBound === '1') return;
+            button.dataset.compileTimerBound = '1';
+            button.addEventListener('click', () => {
+                window.setTimeout(() => {
+                    if (!STATE.active && buttonLooksBusy(button)) beginCompile();
+                }, 150);
+            });
         });
 
-    }, 3000);
+        observer.observe(document.body, { childList: true, subtree: true });
+        ensureBadge();
+    }
 
+    function init() {
+        attachNetworkTracking();
+        attachButtonFallback();
+        render();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
 })();

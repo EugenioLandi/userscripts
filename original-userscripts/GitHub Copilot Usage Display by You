@@ -1,0 +1,218 @@
+// ==UserScript==
+// @name         GitHub Copilot Usage Display
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Display Copilot Pro usage percentage on the Copilot page
+// @author       You
+// @match        https://github.com/copilot*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const SETTINGS_URL = 'https://github.com/settings/copilot/features';
+    const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+    async function fetchUsagePercentage() {
+        try {
+            const response = await fetch(SETTINGS_URL);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            // Look for usage percentage in various possible formats
+            // Common patterns: "X.X%", "XX.X%", or text containing these
+            const bodyText = doc.body.textContent;
+
+            // Try to find percentage near "premium" or "usage" keywords
+            const usageRegex = /(\d+\.?\d*)\s*%/g;
+            const matches = [...bodyText.matchAll(usageRegex)];
+
+            // Look for the most likely usage percentage
+            // Usually the one near "premium", "usage", "requests", or "limit"
+            for (const match of matches) {
+                const index = match.index;
+                const context = bodyText.substring(Math.max(0, index - 100), Math.min(bodyText.length, index + 100)).toLowerCase();
+
+                if (context.includes('premium') || context.includes('usage') ||
+                    context.includes('requests') || context.includes('limit')) {
+                    return match[1];
+                }
+            }
+
+            // Fallback: return first percentage found if no context match
+            if (matches.length > 0) {
+                return matches[0][1];
+            }
+
+            return null;
+        } catch (error) {
+            console.error('Error fetching Copilot usage:', error);
+            return null;
+        }
+    }
+
+    function createUsageDisplay() {
+        const container = document.createElement('div');
+        container.id = 'copilot-usage-display';
+        container.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            padding: 8px 12px;
+            margin-left: 8px;
+            height: 32px;
+            background-color: #f6f8fa;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            color: #24292f;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s;
+        `;
+
+        container.innerHTML = `
+            <span id="copilot-usage-text">Loading...</span>
+        `;
+
+        // Add hover effect
+        container.addEventListener('mouseenter', () => {
+            container.style.backgroundColor = '#eaeef2';
+        });
+        container.addEventListener('mouseleave', () => {
+            const currentBg = container.style.backgroundColor;
+            if (currentBg === 'rgb(234, 238, 242)') { // hover color
+                const usageText = document.getElementById('copilot-usage-text');
+                const percentage = parseFloat(usageText?.textContent || '0');
+                if (percentage >= 90) {
+                    container.style.backgroundColor = '#fff1f0';
+                } else if (percentage >= 75) {
+                    container.style.backgroundColor = '#fff8e8';
+                } else {
+                    container.style.backgroundColor = '#f6f8fa';
+                }
+            }
+        });
+
+        // Add click handler for manual refresh
+        container.addEventListener('click', async () => {
+            const usageText = document.getElementById('copilot-usage-text');
+            if (!usageText) return;
+
+            const originalText = usageText.textContent;
+            usageText.textContent = 'Refreshing...';
+            container.style.opacity = '0.7';
+
+            await updateUsage();
+
+            container.style.opacity = '1';
+        });
+
+        container.title = 'Click to refresh usage';
+
+        return container;
+    }
+
+    async function updateUsage() {
+        const usageText = document.getElementById('copilot-usage-text');
+        if (!usageText) return;
+
+        const percentage = await fetchUsagePercentage();
+
+        if (percentage !== null) {
+            usageText.textContent = `${percentage}%`;
+
+            // Color code based on usage
+            const value = parseFloat(percentage);
+            const container = document.getElementById('copilot-usage-display');
+            if (value >= 90) {
+                container.style.backgroundColor = '#fff1f0';
+                container.style.borderColor = '#ffa399';
+                container.style.color = '#d1242f';
+            } else if (value >= 75) {
+                container.style.backgroundColor = '#fff8e8';
+                container.style.borderColor = '#ffc933';
+                container.style.color = '#7d4e00';
+            } else {
+                container.style.backgroundColor = '#f6f8fa';
+                container.style.borderColor = '#d0d7de';
+                container.style.color = '#24292f';
+            }
+        } else {
+            usageText.textContent = 'N/A';
+        }
+    }
+
+    function insertUsageDisplay() {
+        // Wait for the page to load and find a good insertion point
+        const checkAndInsert = () => {
+            // Try multiple potential insertion points in order of preference
+
+            // 1. Look for header navigation area
+            const headerNav = document.querySelector('header nav') ||
+                            document.querySelector('header .Header-item') ||
+                            document.querySelector('[data-target="nav-list.firstItem"]');
+
+            // 2. Look for main header
+            const header = document.querySelector('header') ||
+                          document.querySelector('.Header');
+
+            // 3. Look for any top-level navigation
+            const topNav = document.querySelector('.UnderlineNav') ||
+                          document.querySelector('[role="navigation"]');
+
+            const insertionPoint = headerNav || header || topNav;
+
+            if (insertionPoint && !document.getElementById('copilot-usage-display')) {
+                const usageDisplay = createUsageDisplay();
+
+                // If it's a nav element, append to it
+                if (insertionPoint.tagName === 'NAV' || insertionPoint.classList.contains('Header-item')) {
+                    insertionPoint.appendChild(usageDisplay);
+                } else {
+                    // Otherwise insert at the end of the header
+                    insertionPoint.style.display = 'flex';
+                    insertionPoint.style.alignItems = 'center';
+                    insertionPoint.appendChild(usageDisplay);
+                }
+
+                updateUsage();
+                setInterval(updateUsage, REFRESH_INTERVAL);
+                return true;
+            }
+            return false;
+        };
+
+        // Try immediately
+        if (checkAndInsert()) return;
+
+        // If not found, use MutationObserver to wait for DOM changes
+        const observer = new MutationObserver((mutations, obs) => {
+            if (checkAndInsert()) {
+                obs.disconnect();
+            }
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        // Stop trying after 10 seconds
+        setTimeout(() => observer.disconnect(), 10000);
+    }
+
+    // Start the script
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', insertUsageDisplay);
+    } else {
+        insertUsageDisplay();
+    }
+})();

@@ -1,9 +1,32 @@
 // ==UserScript==
-// @name        Wikipedia Mobile to Desktop redirect
-// @namespace   CrabbyBlueberry
-// @include     https://*.m.wikipedia.org/*
-// @include     http://*.m.wikipedia.org/*
-// @version     1.1
+// @name         Wikipedia Mobile to Desktop redirect
+// @namespace    CrabbyBlueberry
+// @include      https://*.m.wikipedia.org/*
+// @include      http://*.m.wikipedia.org/*
+// @version      2.0
+// @description  Redirect mobile Wikipedia pages to the desktop site while allowing an explicit session bypass.
+// @grant        none
+// @run-at       document-start
 // ==/UserScript==
 
-window.location = window.location.toString().replace('m.wikipedia.org','wikipedia.org');
+(function () {
+    'use strict';
+
+    const BYPASS_KEY = 'wikipedia-desktop-redirect-bypass';
+    const BYPASS_PARAM = 'keepMobileWikipedia';
+
+    const url = new URL(window.location.href);
+
+    if (url.searchParams.has(BYPASS_PARAM)) {
+        sessionStorage.setItem(BYPASS_KEY, '1');
+        return;
+    }
+
+    if (sessionStorage.getItem(BYPASS_KEY) === '1') return;
+    if (url.hostname !== 'm.wikipedia.org' && !url.hostname.endsWith('.m.wikipedia.org')) return;
+
+    url.hostname = url.hostname === 'm.wikipedia.org'
+        ? 'wikipedia.org'
+        : url.hostname.replace('.m.wikipedia.org', '.wikipedia.org');
+    window.location.replace(url.toString());
+})();

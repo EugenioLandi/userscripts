@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Usage Monitor
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  Floating widget showing 5h and 7d Claude usage in real time
+// @version      3.0
+// @description  Floating widget showing 5h and 7d Claude usage with manual refresh and persistent position
 // @author       You
 // @match        https://claude.ai/*
 // @run-at       document-idle
@@ -12,27 +12,21 @@
 (function () {
     'use strict';
 
-    const BASE     = 'https://claude.ai';
-    const REFRESH_MS = 10_000;
-    const POS_KEY    = 'claude_usage_monitor_pos';
-    const OPEN_KEY   = 'claude_usage_monitor_open';
+    if (window.__claudeUsageMonitorInitialized) return;
+    window.__claudeUsageMonitorInitialized = true;
 
-    // ── API ────────────────────────────────────────────────────────────────────
+    const BASE = 'https://claude.ai';
+    const REFRESH_MS = 15_000;
+    const POS_KEY = 'claude_usage_monitor_pos';
+    const OPEN_KEY = 'claude_usage_monitor_open';
 
-    async function getOrgId() {
-        const r = await fetch(`${BASE}/api/organizations`, { credentials: 'include' });
-        if (r.ok) {
-            const arr = await r.json();
-            const id = arr?.[0]?.uuid ?? null;
-            if (id) return id;
-        }
-        // Fallback: scrape UUID from inline page scripts
-        for (const s of document.querySelectorAll('script')) {
-            const m = s.textContent.match(/"uuid"\s*:\s*"([0-9a-f-]{36})"/);
-            if (m) return m[1];
-        }
-        return null;
-    }
+    const STATE = {
+        orgId: null,
+        refreshTimer: null,
+        refreshing: false,
+        expanded: false,
+        lastUpdated: null,
+    };
 
     const USAGE_PATHS = [
         id => `${BASE}/api/organizations/${id}/usage`,
@@ -41,217 +35,401 @@
         id => `${BASE}/api/organizations/${id}/usage_limits`,
     ];
 
-    async function getUsage(orgId) {
-        let lastErr = null;
-        for (const fn of USAGE_PATHS) {
-            try {
-                const r = await fetch(fn(orgId), { credentials: 'include' });
-                if (!r.ok) { lastErr = `${fn(orgId)} → ${r.status}`; continue; }
-                const json = await r.json();
-                console.debug('[Claude Usage Monitor] endpoint:', fn(orgId), json);
-                return json;
-            } catch (e) {
-                lastErr = e.message;
-            }
-        }
-        throw new Error(`All endpoints failed. Last: ${lastErr}`);
+    let widget;
+    let headerText;
+    let toggleButton;
+    let refreshButton;
+    let detailPanel;
+    let footerText;
+    let bar5h;
+    let label5h;
+    let bar7d;
+    let label7d;
+
+    function scheduleRefresh(delay = REFRESH_MS) {
+        clearTimeout(STATE.refreshTimer);
+        STATE.refreshTimer = window.setTimeout(() => {
+            refresh();
+        }, delay);
     }
 
-    // ── Normalise response → { five_hour, seven_day } ─────────────────────────
+    async function getOrgId() {
+        const response = await fetch(`${BASE}/api/organizations`, { credentials: 'include' });
+        if (response.ok) {
+            const data = await response.json();
+            const id = data?.[0]?.uuid ?? null;
+            if (id) return id;
+        }
+
+        for (const script of document.querySelectorAll('script')) {
+            const match = script.textContent.match(/"uuid"\s*:\s*"([0-9a-f-]{36})"/i);
+            if (match) return match[1];
+        }
+
+        return null;
+    }
+
+    async function getUsage(orgId) {
+        let lastError = null;
+
+        for (const buildPath of USAGE_PATHS) {
+            const url = buildPath(orgId);
+            try {
+                const response = await fetch(url, { credentials: 'include' });
+                if (!response.ok) {
+                    lastError = new Error(`${response.status} on ${url}`);
+                    continue;
+                }
+                return await response.json();
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw lastError || new Error('All usage endpoints failed');
+    }
+
+    function pickValue(obj, keys) {
+        for (const key of keys) {
+            if (obj?.[key] !== undefined && obj?.[key] !== null) {
+                return obj[key];
+            }
+        }
+        return null;
+    }
+
+    function toWindowData(entry) {
+        if (!entry || typeof entry !== 'object') return null;
+
+        return {
+            utilization: pickValue(entry, ['utilization', 'percentage', 'percent_used', 'used_percent', 'usage']),
+            resetsAt: pickValue(entry, ['resets_at', 'resetsAt', 'reset_at', 'resetAt', 'window_end', 'ends_at']),
+        };
+    }
 
     function normalise(raw) {
         if (!raw || typeof raw !== 'object') return {};
-        if (raw.five_hour !== undefined || raw.seven_day !== undefined) return raw;
-        if (raw.fiveHour  !== undefined || raw.sevenDay  !== undefined)
-            return { five_hour: raw.fiveHour, seven_day: raw.sevenDay };
-        if (Array.isArray(raw)) {
-            const out = {};
-            for (const e of raw) {
-                const wt = (e.window_type || e.windowType || '').toLowerCase();
-                if (wt.includes('five') || wt.includes('5h')) out.five_hour = e;
-                if (wt.includes('seven') || wt.includes('7d')) out.seven_day = e;
-            }
-            return out;
+
+        if (raw.five_hour !== undefined || raw.seven_day !== undefined) {
+            return {
+                five_hour: toWindowData(raw.five_hour),
+                seven_day: toWindowData(raw.seven_day),
+            };
         }
-        if (raw.usage)  return normalise(raw.usage);
-        if (Array.isArray(raw.limits)) return normalise(raw.limits);
-        console.warn('[Claude Usage Monitor] unknown shape:', raw);
+
+        if (raw.fiveHour !== undefined || raw.sevenDay !== undefined) {
+            return {
+                five_hour: toWindowData(raw.fiveHour),
+                seven_day: toWindowData(raw.sevenDay),
+            };
+        }
+
+        if (Array.isArray(raw)) {
+            const output = {};
+            for (const entry of raw) {
+                const type = String(pickValue(entry, ['window_type', 'windowType', 'name', 'label']) || '').toLowerCase();
+                if (type.includes('five') || type.includes('5h')) output.five_hour = toWindowData(entry);
+                if (type.includes('seven') || type.includes('7d')) output.seven_day = toWindowData(entry);
+            }
+            return output;
+        }
+
+        for (const nestedKey of ['usage', 'limits', 'rate_limits', 'usage_limits', 'windows', 'data']) {
+            if (raw[nestedKey] !== undefined) {
+                return normalise(raw[nestedKey]);
+            }
+        }
+
         return {};
     }
 
-    // ── Formatting ─────────────────────────────────────────────────────────────
-
-    function fmtCountdown(iso) {
-        if (!iso) return '–';
-        const ms = new Date(iso) - Date.now();
-        if (ms <= 0) return 'resetting…';
-        const h = Math.floor(ms / 3_600_000);
-        const m = Math.floor((ms % 3_600_000) / 60_000);
-        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    function formatCountdown(isoString) {
+        if (!isoString) return 'reset time unavailable';
+        const ms = new Date(isoString).getTime() - Date.now();
+        if (!Number.isFinite(ms) || ms <= 0) return 'resetting…';
+        const hours = Math.floor(ms / 3_600_000);
+        const minutes = Math.floor((ms % 3_600_000) / 60_000);
+        return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
     }
 
-    function usageColor(pct) {
-        if (pct < 50) return '#4ade80';
-        if (pct < 75) return '#facc15';
-        if (pct < 90) return '#fb923c';
+    function formatUpdatedAt(date) {
+        if (!date) return 'Never updated';
+        return `Updated ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+    }
+
+    function usageColor(percent) {
+        if (percent < 50) return '#4ade80';
+        if (percent < 75) return '#facc15';
+        if (percent < 90) return '#fb923c';
         return '#f87171';
     }
 
-    // ── Widget DOM ─────────────────────────────────────────────────────────────
+    function makeBar(label, container) {
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-top:8px;';
 
-    let widget, headerText, btnToggle, detailPanel;
-    let bar5h, lbl5h, bar7d, lbl7d;
-    let expanded = false;
-    let orgId    = null;
+        const title = document.createElement('div');
+        title.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:4px;color:#b8b8b8;font-size:11px;gap:8px;';
 
-    function makeBar(label, panel) {
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'margin-top:6px';
-        const top = document.createElement('div');
-        top.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:3px;color:#aaa;font-size:11px';
-        const name = document.createElement('span'); name.textContent = label;
-        const time = document.createElement('span'); time.textContent = '–';
-        top.append(name, time);
+        const name = document.createElement('span');
+        name.textContent = label;
+
+        const info = document.createElement('span');
+        info.textContent = 'Loading…';
+
+        title.append(name, info);
+
         const track = document.createElement('div');
-        track.style.cssText = 'background:#333;border-radius:4px;height:6px;overflow:hidden';
+        track.style.cssText = 'background:#2f2f2f;border-radius:999px;height:8px;overflow:hidden;';
+
         const fill = document.createElement('div');
-        fill.style.cssText = 'height:100%;width:0%;border-radius:4px;background:#4ade80;transition:width .4s,background .4s';
+        fill.style.cssText = 'height:100%;width:0%;background:#4ade80;transition:width .25s ease,background-color .25s ease;';
         track.appendChild(fill);
-        wrap.append(top, track);
-        panel.appendChild(wrap);
-        return { fill, time };
+
+        row.append(title, track);
+        container.appendChild(row);
+
+        return { row, fill, info };
     }
 
-    function buildWidget() {
-        expanded = localStorage.getItem(OPEN_KEY) === '1';
-        widget = document.createElement('div');
-        widget.id = 'claude-usage-monitor';
-        widget.style.cssText = [
-            'position:fixed','bottom:20px','right:20px','z-index:99999',
-            'background:#1e1e1e','border:1px solid #3a3a3a','border-radius:10px',
-            'box-shadow:0 4px 16px rgba(0,0,0,.5)','font-family:system-ui,sans-serif',
-            'font-size:13px','color:#d4d4d4','user-select:none','min-width:170px',
-        ].join(';');
+    function clampPosition(position) {
+        const width = widget?.offsetWidth || 220;
+        const height = widget?.offsetHeight || 120;
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
 
-        const header = document.createElement('div');
-        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:7px 10px;cursor:move;gap:8px';
-
-        headerText = document.createElement('span');
-        headerText.style.fontWeight = '600';
-        headerText.textContent = 'Usage –';
-
-        btnToggle = document.createElement('button');
-        btnToggle.textContent = expanded ? '−' : '+';
-        btnToggle.style.cssText = 'background:none;border:1px solid #555;border-radius:4px;color:#aaa;cursor:pointer;font-size:14px;line-height:1;padding:1px 5px';
-        btnToggle.addEventListener('click', e => {
-            e.stopPropagation();
-            expanded = !expanded;
-            localStorage.setItem(OPEN_KEY, expanded ? '1' : '0');
-            btnToggle.textContent     = expanded ? '−' : '+';
-            detailPanel.style.display = expanded ? 'block' : 'none';
-        });
-
-        header.append(headerText, btnToggle);
-        widget.appendChild(header);
-
-        detailPanel = document.createElement('div');
-        detailPanel.style.cssText = `display:${expanded ? 'block' : 'none'};padding:0 10px 10px`;
-
-        ({ fill: bar5h, time: lbl5h } = makeBar('5h window', detailPanel));
-        ({ fill: bar7d, time: lbl7d } = makeBar('7d window', detailPanel));
-
-        widget.appendChild(detailPanel);
-        document.body.appendChild(widget);
-        makeDraggable(widget, header);
-        restorePosition();
+        return {
+            x: Math.min(Math.max(8, position.x), maxX),
+            y: Math.min(Math.max(8, position.y), maxY),
+        };
     }
 
-    // ── Data → UI ──────────────────────────────────────────────────────────────
-
-    function applyUsage(raw) {
-        const data  = normalise(raw);
-        const fh    = data?.five_hour;
-        const sd    = data?.seven_day;
-        const toPct = v => v == null ? null : (v <= 1 ? Math.round(v * 100) : Math.round(v));
-        const pct5h = toPct(fh?.utilization);
-        const pct7d = toPct(sd?.utilization);
-        const worst = Math.max(pct5h ?? 0, pct7d ?? 0);
-
-        headerText.textContent = `Usage ${worst}%`;
-        headerText.style.color = usageColor(worst);
-
-        if (pct5h !== null) {
-            bar5h.style.width = `${Math.min(pct5h, 100)}%`;
-            bar5h.style.background = usageColor(pct5h);
-            lbl5h.textContent = `resets ${fmtCountdown(fh.resets_at)}`;
-        } else {
-            bar5h.style.width = '0%';
-            lbl5h.textContent = 'no data';
-        }
-
-        const row7d = bar7d.closest('div[style*="margin-top"]');
-        if (pct7d !== null) {
-            if (row7d) row7d.style.display = 'block';
-            bar7d.style.width = `${Math.min(pct7d, 100)}%`;
-            bar7d.style.background = usageColor(pct7d);
-            lbl7d.textContent = `resets ${fmtCountdown(sd.resets_at)}`;
-        } else {
-            if (row7d) row7d.style.display = 'none';
-        }
-    }
-
-    async function refresh() {
-        try {
-            if (!orgId) orgId = await getOrgId();
-            if (!orgId) { headerText.textContent = 'Usage (no org)'; return; }
-            applyUsage(await getUsage(orgId));
-        } catch (err) {
-            console.warn('[Claude Usage Monitor]', err);
-            headerText.textContent = 'Usage (error)';
-            headerText.style.color = '#f87171';
-            if (lbl5h) lbl5h.textContent = err.message.slice(0, 80);
-        }
-    }
-
-    // ── Drag ───────────────────────────────────────────────────────────────────
-
-    function makeDraggable(el, handle) {
-        let ox, oy, sx, sy;
-        handle.addEventListener('mousedown', e => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            const r = el.getBoundingClientRect();
-            ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
-            const move = e => {
-                el.style.left  = `${ox + e.clientX - sx}px`;
-                el.style.top   = `${oy + e.clientY - sy}px`;
-                el.style.right = el.style.bottom = 'auto';
-            };
-            const up = () => {
-                document.removeEventListener('mousemove', move);
-                document.removeEventListener('mouseup', up);
-                const r = el.getBoundingClientRect();
-                localStorage.setItem(POS_KEY, JSON.stringify({ x: r.left, y: r.top }));
-            };
-            document.addEventListener('mousemove', move);
-            document.addEventListener('mouseup', up);
-        });
+    function applyPosition(position) {
+        const safePosition = clampPosition(position);
+        widget.style.left = `${safePosition.x}px`;
+        widget.style.top = `${safePosition.y}px`;
+        widget.style.right = 'auto';
+        widget.style.bottom = 'auto';
+        localStorage.setItem(POS_KEY, JSON.stringify(safePosition));
     }
 
     function restorePosition() {
         try {
-            const s = JSON.parse(localStorage.getItem(POS_KEY));
-            if (s) {
-                widget.style.left  = `${s.x}px`;
-                widget.style.top   = `${s.y}px`;
-                widget.style.right = widget.style.bottom = 'auto';
+            const stored = JSON.parse(localStorage.getItem(POS_KEY));
+            if (stored && typeof stored.x === 'number' && typeof stored.y === 'number') {
+                applyPosition(stored);
             }
-        } catch { /* ignore */ }
+        } catch {
+            // Ignore corrupted storage.
+        }
     }
 
-    // ── Boot ───────────────────────────────────────────────────────────────────
+    function updateExpandedState() {
+        detailPanel.style.display = STATE.expanded ? 'block' : 'none';
+        toggleButton.textContent = STATE.expanded ? '−' : '+';
+        localStorage.setItem(OPEN_KEY, STATE.expanded ? '1' : '0');
+    }
 
-    buildWidget();
-    refresh();
-    setInterval(refresh, REFRESH_MS);
+    function setFooter(message, isError = false) {
+        footerText.textContent = message;
+        footerText.style.color = isError ? '#f87171' : '#9ca3af';
+    }
+
+    function buildWidget() {
+        STATE.expanded = localStorage.getItem(OPEN_KEY) === '1';
+
+        widget = document.createElement('div');
+        widget.id = 'claude-usage-monitor';
+        widget.style.cssText = [
+            'position:fixed',
+            'right:20px',
+            'bottom:20px',
+            'z-index:99999',
+            'min-width:220px',
+            'background:#171717',
+            'color:#e5e7eb',
+            'border:1px solid #303030',
+            'border-radius:12px',
+            'box-shadow:0 12px 28px rgba(0,0,0,.45)',
+            'font:13px/1.4 system-ui,sans-serif',
+            'user-select:none',
+        ].join(';');
+
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px;cursor:grab;';
+
+        headerText = document.createElement('span');
+        headerText.style.cssText = 'font-weight:700;';
+        headerText.textContent = 'Usage —';
+
+        const actionGroup = document.createElement('div');
+        actionGroup.style.cssText = 'display:flex;align-items:center;gap:6px;';
+
+        refreshButton = document.createElement('button');
+        refreshButton.type = 'button';
+        refreshButton.textContent = '↻';
+        refreshButton.title = 'Refresh usage';
+        refreshButton.style.cssText = 'background:none;border:1px solid #4b5563;border-radius:6px;color:#d1d5db;cursor:pointer;font-size:12px;line-height:1;padding:4px 6px;';
+        refreshButton.addEventListener('click', event => {
+            event.stopPropagation();
+            refresh(true);
+        });
+
+        toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.style.cssText = 'background:none;border:1px solid #4b5563;border-radius:6px;color:#d1d5db;cursor:pointer;font-size:13px;line-height:1;padding:4px 7px;';
+        toggleButton.addEventListener('click', event => {
+            event.stopPropagation();
+            STATE.expanded = !STATE.expanded;
+            updateExpandedState();
+        });
+
+        actionGroup.append(refreshButton, toggleButton);
+        header.append(headerText, actionGroup);
+
+        detailPanel = document.createElement('div');
+        detailPanel.style.cssText = 'padding:0 12px 12px;';
+
+        ({ fill: bar5h, info: label5h } = makeBar('5h window', detailPanel));
+        ({ fill: bar7d, info: label7d } = makeBar('7d window', detailPanel));
+
+        footerText = document.createElement('div');
+        footerText.style.cssText = 'margin-top:10px;font-size:11px;color:#9ca3af;';
+        detailPanel.appendChild(footerText);
+
+        widget.append(header, detailPanel);
+        document.body.appendChild(widget);
+
+        updateExpandedState();
+        setFooter('Waiting for first refresh…');
+        makeDraggable(widget, header);
+        restorePosition();
+    }
+
+    function toPercent(value) {
+        if (value === null || value === undefined) return null;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return numeric <= 1 ? Math.round(numeric * 100) : Math.round(numeric);
+    }
+
+    function updateRow(fillEl, labelEl, rowData) {
+        const percent = toPercent(rowData?.utilization);
+        if (percent === null) {
+            fillEl.style.width = '0%';
+            fillEl.style.backgroundColor = '#4b5563';
+            labelEl.textContent = 'No data';
+            return 0;
+        }
+
+        const safePercent = Math.max(0, Math.min(100, percent));
+        fillEl.style.width = `${safePercent}%`;
+        fillEl.style.backgroundColor = usageColor(safePercent);
+        labelEl.textContent = `${safePercent}% • ${formatCountdown(rowData?.resetsAt)}`;
+        return safePercent;
+    }
+
+    function applyUsage(raw) {
+        const data = normalise(raw);
+        const percent5h = updateRow(bar5h, label5h, data.five_hour);
+        const percent7d = updateRow(bar7d, label7d, data.seven_day);
+        const worst = Math.max(percent5h, percent7d);
+
+        headerText.textContent = `Usage ${worst}%`;
+        headerText.style.color = usageColor(worst);
+        STATE.lastUpdated = new Date();
+        setFooter(formatUpdatedAt(STATE.lastUpdated));
+    }
+
+    async function refresh(force = false) {
+        if (STATE.refreshing && !force) return;
+        STATE.refreshing = true;
+        refreshButton.disabled = true;
+        refreshButton.style.opacity = '0.6';
+        headerText.textContent = 'Usage loading…';
+        headerText.style.color = '#e5e7eb';
+
+        try {
+            if (!STATE.orgId) {
+                STATE.orgId = await getOrgId();
+            }
+
+            if (!STATE.orgId) {
+                throw new Error('Organization not found');
+            }
+
+            applyUsage(await getUsage(STATE.orgId));
+        } catch (error) {
+            console.warn('[Claude Usage Monitor]', error);
+            headerText.textContent = 'Usage error';
+            headerText.style.color = '#f87171';
+            label5h.textContent = 'Unable to load usage';
+            label7d.textContent = 'Retrying automatically';
+            setFooter(error?.message ? String(error.message).slice(0, 90) : 'Unknown error', true);
+        } finally {
+            STATE.refreshing = false;
+            refreshButton.disabled = false;
+            refreshButton.style.opacity = '1';
+            scheduleRefresh();
+        }
+    }
+
+    function makeDraggable(element, handle) {
+        let pointerId = null;
+        let originX = 0;
+        let originY = 0;
+        let startX = 0;
+        let startY = 0;
+
+        handle.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            pointerId = event.pointerId;
+            handle.setPointerCapture(pointerId);
+            const rect = element.getBoundingClientRect();
+            originX = rect.left;
+            originY = rect.top;
+            startX = event.clientX;
+            startY = event.clientY;
+            handle.style.cursor = 'grabbing';
+            event.preventDefault();
+        });
+
+        handle.addEventListener('pointermove', event => {
+            if (event.pointerId !== pointerId) return;
+            applyPosition({
+                x: originX + event.clientX - startX,
+                y: originY + event.clientY - startY,
+            });
+        });
+
+        const release = event => {
+            if (event.pointerId !== pointerId) return;
+            pointerId = null;
+            handle.style.cursor = 'grab';
+        };
+
+        handle.addEventListener('pointerup', release);
+        handle.addEventListener('pointercancel', release);
+    }
+
+    function attachLifecycle() {
+        window.addEventListener('resize', () => restorePosition());
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                refresh(true);
+            }
+        });
+    }
+
+    function boot() {
+        if (!document.body) {
+            window.setTimeout(boot, 100);
+            return;
+        }
+        buildWidget();
+        attachLifecycle();
+        refresh(true);
+    }
+
+    boot();
 })();

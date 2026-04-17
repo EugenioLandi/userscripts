@@ -1,157 +1,182 @@
 // ==UserScript==
 // @name         Overleaf ZIP Download with Date
 // @namespace    http://tampermonkey.net/
-// @version      0.2
-// @description  Add ZIP download button next to PDF download in Overleaf
+// @version      1.0
+// @description  Add custom-named PDF and ZIP downloads to Overleaf with timestamped filenames and status feedback
 // @author       You
 // @match        https://*.overleaf.com/*
 // @grant        none
+// @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
-    // Funzione per ottenere il timestamp nel formato yyyy-mm-dd
+    if (window.__overleafCustomDownloadsInitialized) return;
+    window.__overleafCustomDownloadsInitialized = true;
+
+    const ZIP_BUTTON_CLASS = 'custom-zip-download-btn';
+    const STATUS_ID = 'custom-download-status';
+
     function getTimestamp() {
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}_${hours}-${minutes}`;
     }
 
-    // Funzione per estrarre il nome del progetto dall'URL o dalla pagina
-    function getProjectName() {
-        const titleElement = document.querySelector('.ide-redesign-toolbar-project-name');
-        if (titleElement) {
-            return titleElement.textContent.trim();
-        }
-        const pageTitle = document.title;
-        if (pageTitle && !pageTitle.includes('Overleaf')) {
-            return pageTitle.split('-')[0].trim();
-        }
-        return 'document';
-    }
-
-    // Funzione per pulire il nome del file (rimuove caratteri non validi)
     function sanitizeFilename(name) {
-        return name.replace(/[^a-zA-Z0-9_\-]/g, ' ');
+        return String(name || 'document')
+            .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\.+$/g, '') || 'document';
     }
 
-    // Funzione per estrarre il project ID dall'URL
+    function getProjectName() {
+        const selectors = [
+            '.ide-redesign-toolbar-project-name',
+            '[data-testid="project-name"]',
+            'input[aria-label="Project name"]',
+            'input[name="projectName"]',
+        ];
+
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            const value = element?.value || element?.textContent;
+            if (value && value.trim()) return value.trim();
+        }
+
+        const title = document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim();
+        return title || 'document';
+    }
+
     function getProjectId() {
-        const match = window.location.pathname.match(/\/project\/([a-f0-9]+)/);
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
         return match ? match[1] : null;
     }
 
-    // Funzione per scaricare ZIP con nome personalizzato
-    function downloadZipWithCustomName(url) {
-        const projectName = sanitizeFilename(getProjectName());
-        const timestamp = getTimestamp();
-        const customFilename = `${projectName}- ${timestamp}.zip`;
-
-        fetch(url)
-            .then(response => response.blob())
-            .then(blob => {
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = customFilename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
-            })
-            .catch(error => {
-                console.error('ZIP Download failed:', error);
-                window.open(url, '_blank');
-            });
+    function buildFilename(extension) {
+        return `${sanitizeFilename(getProjectName())}- ${getTimestamp()}.${extension}`;
     }
 
-    // Funzione per creare e inserire il pulsante ZIP
+    function getStatusElement(anchor) {
+        let status = document.getElementById(STATUS_ID);
+        if (!status) {
+            status = document.createElement('span');
+            status.id = STATUS_ID;
+            status.style.cssText = 'margin-left:8px;font:600 12px/1 system-ui,sans-serif;color:#57606a;white-space:nowrap;';
+        }
+
+        if (anchor?.parentElement && status.parentElement !== anchor.parentElement) {
+            anchor.parentElement.appendChild(status);
+        }
+
+        return status;
+    }
+
+    function setStatus(anchor, message, isError = false) {
+        const status = getStatusElement(anchor);
+        status.textContent = message;
+        status.style.color = isError ? '#cf222e' : '#57606a';
+    }
+
+    function triggerDownload(blob, filename) {
+        const link = document.createElement('a');
+        const blobUrl = URL.createObjectURL(blob);
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
+    }
+
+    async function downloadFile(url, filename, anchor) {
+        setStatus(anchor, `Downloading ${filename}…`);
+
+        try {
+            const response = await fetch(new URL(url, window.location.origin), { credentials: 'include' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            triggerDownload(await response.blob(), filename);
+            setStatus(anchor, `Saved ${filename}`);
+        } catch (error) {
+            console.error('[Overleaf downloads]', error);
+            setStatus(anchor, `Download failed (${error.message})`, true);
+            window.open(url, '_blank', 'noopener');
+        }
+    }
+
+    function makeCompactToolbarButton(button, label, emoji, title) {
+        button.draggable = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('data-ol-loading');
+        button.setAttribute('role', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = title;
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        button.style.minWidth = 'auto';
+        button.style.padding = '0 6px';
+        button.innerHTML = `<span class="button-content" aria-hidden="false" style="font-size:15px;line-height:1;">${emoji}</span>`;
+        return button;
+    }
+
+    function createZipButton(pdfButton) {
+        const existing = document.querySelector(`.${ZIP_BUTTON_CLASS}`);
+        if (existing) return existing;
+
+        const zipButton = pdfButton.cloneNode(true);
+        zipButton.classList.add(ZIP_BUTTON_CLASS);
+        zipButton.removeAttribute('href');
+        zipButton.href = '#';
+        makeCompactToolbarButton(zipButton, 'Download ZIP', '🗜️', 'Download ZIP with custom filename');
+        zipButton.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const projectId = getProjectId();
+            if (!projectId) {
+                setStatus(pdfButton, 'Project id not found', true);
+                return;
+            }
+            downloadFile(`/project/${encodeURIComponent(projectId)}/download/zip`, buildFilename('zip'), zipButton);
+        });
+
+        pdfButton.parentElement?.insertBefore(zipButton, pdfButton.nextSibling);
+        return zipButton;
+    }
+
     function addZipDownloadButton() {
         const pdfButton = document.querySelector('a[aria-label="Download PDF"]');
         if (!pdfButton) return;
-
-        // Verifica se il pulsante ZIP esiste già
-        if (document.querySelector('.custom-zip-download-btn')) return;
-
-        const projectId = getProjectId();
-        if (!projectId) return;
-
-        // Crea il pulsante ZIP
-        const zipButton = document.createElement('a');
-        zipButton.href = '#';
-        zipButton.draggable = false;
-        zipButton.setAttribute('aria-label', 'Download ZIP');
-        zipButton.setAttribute('data-ol-loading', 'false');
-        zipButton.className = 'd-inline-grid pdf-toolbar-btn btn btn-link custom-zip-download-btn';
-        zipButton.style.cssText = 'pointer-events: auto;';
-        zipButton.tabIndex = 0;
-
-        zipButton.innerHTML = `
-            <span class="button-content" aria-hidden="false">
-                <span class="material-symbols" aria-hidden="true" translate="no">folder_zip</span>
-            </span>
-        `;
-
-        // Aggiungi l'event listener per il click
-        zipButton.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            const zipUrl = `/project/${projectId}/download/zip`;
-            downloadZipWithCustomName(zipUrl);
-        });
-
-        // Inserisci il pulsante accanto al pulsante PDF
-        pdfButton.parentNode.insertBefore(zipButton, pdfButton.nextSibling);
+        createZipButton(pdfButton);
+        getStatusElement(pdfButton);
     }
 
-    // Funzione per scaricare con nome personalizzato
-    function downloadWithCustomName(url) {
-        const projectName = sanitizeFilename(getProjectName());
-        const timestamp = getTimestamp();
-        const customFilename = `${projectName}- ${timestamp}.pdf`;
+    document.addEventListener('click', event => {
+        const target = event.target.closest('a[aria-label="Download PDF"]');
+        if (!target || target.classList.contains(ZIP_BUTTON_CLASS)) return;
+        if (!target.href) return;
 
-        fetch(url)
-            .then(response => response.blob())
-            .then(blob => {
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = customFilename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
-            })
-            .catch(error => {
-                console.error('Download failed:', error);
-                // Fallback al download originale
-                window.open(url, '_blank');
-            });
-    }
-
-    // Intercetta i click sui pulsanti di download
-    document.addEventListener('click', function(e) {
-        const target = e.target.closest('a[aria-label="Download PDF"]');
-        if (target && target.href && target.href.includes('/download/project/')) {
-            e.preventDefault();
-            e.stopPropagation();
-            downloadWithCustomName(target.href);
-        }
+        event.preventDefault();
+        event.stopPropagation();
+        downloadFile(target.href, buildFilename('pdf'), target);
     }, true);
 
-    // Osserva i cambiamenti nel DOM per aggiungere il pulsante ZIP quando necessario
-    const observer = new MutationObserver(function(mutations) {
+    const observer = new MutationObserver(() => addZipDownloadButton());
+
+    function init() {
+        observer.observe(document.body, { childList: true, subtree: true });
         addZipDownloadButton();
-    });
+    }
 
-    // Inizia a osservare
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-
-    // Aggiungi il pulsante inizialmente
-    setTimeout(addZipDownloadButton, 2000);
-
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
 })();
