@@ -298,7 +298,6 @@
                 box-sizing: border-box;
             }
 
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-footer,
             .${FOOTER_CLASS} {
                 padding: 12px 16px 16px;
                 border-top: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.2));
@@ -498,7 +497,7 @@
             const body = document.createElement('div');
             body.className = 'experimental-overleaf-native-sidebar-body';
             const footer = document.createElement('div');
-            footer.className = `${FOOTER_CLASS} experimental-overleaf-native-sidebar-footer`;
+            footer.className = FOOTER_CLASS;
             panelRoot.append(header, body, footer);
             context.panelContainer.style.position = context.panelContainer.style.position || 'relative';
             context.panelContainer.appendChild(panelRoot);
@@ -587,10 +586,6 @@
     }
 
     function rerenderPanel(panelId) {
-        if (panelId && state.activeId !== panelId) {
-            scheduleSync(0);
-            return;
-        }
         scheduleSync(0);
     }
 
