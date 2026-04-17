@@ -593,10 +593,8 @@
 
         const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
         if (activePanel) {
-            let activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId);
-            if (!activePanelElement) {
-                activePanelElement = ensureCustomPanel(context, activePanel);
-            }
+            const activePanelElement = panels.find(panel => panel.getAttribute(TAB_ATTR) === state.activeId)
+                || ensureCustomPanel(context, activePanel);
             if (shouldRenderPanel(activePanelElement, activePanel)) {
                 renderPanelContent(context, activePanel);
             }
