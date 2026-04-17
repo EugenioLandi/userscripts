@@ -43,5 +43,5 @@ https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot
 - `Overleaf GitHub Shortcut`
 - `Overleaf ZIP Download with Date`
 - `Wikipedia Mobile to Desktop redirect`
-- `arXiv PDF Downloader with Custom Filenam`
+- `arXiv PDF Downloader with Custom Filename`
 - `github copilot model multiplier`
