@@ -8,6 +8,7 @@
     const STYLE_ID = 'experimental-overleaf-native-sidebar-style';
     const PANEL_ATTR = 'data-experimental-overleaf-native-panel';
     const TAB_ATTR = 'data-experimental-overleaf-native-tab';
+    const FOOTER_CLASS = 'experimental-overleaf-native-sidebar-footer-slot';
 
     const state = {
         panels: new Map(),
@@ -105,7 +106,7 @@
 
     function setFooterText(text = '') {
         state.footerText = String(text || '');
-        const footer = document.querySelector(`.${PANEL_ATTR.replace(/[^a-z0-9-]/gi, '')}-footer`);
+        const footer = document.querySelector(`.${FOOTER_CLASS}`);
         if (footer) footer.textContent = state.footerText;
     }
 
@@ -298,7 +299,7 @@
             }
 
             [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-footer,
-            .${PANEL_ATTR.replace(/[^a-z0-9-]/gi, '')}-footer {
+            .${FOOTER_CLASS} {
                 padding: 12px 16px 16px;
                 border-top: 1px solid var(--experimental-overleaf-sidebar-border, rgba(127, 127, 127, 0.2));
                 font-size: 0.75rem;
@@ -497,7 +498,7 @@
             const body = document.createElement('div');
             body.className = 'experimental-overleaf-native-sidebar-body';
             const footer = document.createElement('div');
-            footer.className = `${PANEL_ATTR.replace(/[^a-z0-9-]/gi, '')}-footer experimental-overleaf-native-sidebar-footer`;
+            footer.className = `${FOOTER_CLASS} experimental-overleaf-native-sidebar-footer`;
             panelRoot.append(header, body, footer);
             context.panelContainer.style.position = context.panelContainer.style.position || 'relative';
             context.panelContainer.appendChild(panelRoot);
@@ -518,7 +519,7 @@
         const title = panelRoot.querySelector('.experimental-overleaf-native-sidebar-title');
         const subtitle = panelRoot.querySelector('.experimental-overleaf-native-sidebar-subtitle');
         const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
-        const footer = panelRoot.querySelector(`.${PANEL_ATTR.replace(/[^a-z0-9-]/gi, '')}-footer`);
+        const footer = panelRoot.querySelector(`.${FOOTER_CLASS}`);
         title.textContent = panelDefinition.title;
         subtitle.textContent = panelDefinition.subtitle || '';
         body.textContent = '';
