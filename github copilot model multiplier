@@ -284,7 +284,8 @@
             'main label',
         ];
 
-        for (const element of document.querySelectorAll(labelSelectors.join(', '))) {
+        const labelCandidates = new Set(document.querySelectorAll(labelSelectors.join(', ')));
+        for (const element of labelCandidates) {
             if (normalize(element.textContent) !== 'models') continue;
             element.title = modelsLabelTitle();
         }
