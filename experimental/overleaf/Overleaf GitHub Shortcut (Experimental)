@@ -1,0 +1,265 @@
+// ==UserScript==
+// @name         Overleaf GitHub Shortcut (Experimental)
+// @namespace    http://tampermonkey.net/
+// @version      1.3.1
+// @description  Add a GitHub integration shortcut next to the PDF/ZIP controls in Overleaf
+// @author       You
+// @match        https://*.overleaf.com/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20GitHub%20Shortcut%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20GitHub%20Shortcut%20%28Experimental%29
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__experimentalOverleafGitHubShortcutInitialized) return;
+    window.__experimentalOverleafGitHubShortcutInitialized = true;
+
+    const BUTTON_CLASS = 'experimental-overleaf-github-shortcut-btn';
+    const STATUS_ID = 'experimental-overleaf-github-shortcut-status';
+
+    function getGitHubIconMarkup() {
+        return [
+            '<span class="button-content" aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;">',
+            '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" stroke="none" focusable="false" aria-hidden="true">',
+            '<path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>',
+            '</svg>',
+            '</span>',
+        ].join('');
+    }
+
+    function getPdfButton() {
+        return document.querySelector('a[aria-label="Download PDF"]');
+    }
+
+    function getZipButton() {
+        return document.querySelector('.experimental-overleaf-zip-download-btn, .custom-zip-download-btn');
+    }
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
+    }
+
+    function normalizeText(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function getClickableText(element) {
+        return normalizeText([
+            element.textContent,
+            element.getAttribute('aria-label'),
+            element.getAttribute('title'),
+            element.getAttribute('data-testid'),
+            element.getAttribute('href'),
+        ].filter(Boolean).join(' '));
+    }
+
+    function getStatusElement(anchor) {
+        let status = document.getElementById(STATUS_ID);
+        if (!status) {
+            status = document.createElement('span');
+            status.id = STATUS_ID;
+            status.style.cssText = 'margin-left:8px;font:600 12px/1 system-ui,sans-serif;color:#57606a;white-space:nowrap;';
+        }
+
+        if (anchor?.parentElement && status.parentElement !== anchor.parentElement) {
+            anchor.parentElement.appendChild(status);
+        }
+
+        return status;
+    }
+
+    function setStatus(anchor, message, isError = false) {
+        const status = getStatusElement(anchor);
+        status.textContent = message;
+        status.style.color = isError ? '#cf222e' : '#57606a';
+    }
+
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && element.getClientRects().length > 0);
+    }
+
+    function getTargetScore(element) {
+        const text = getClickableText(element);
+
+        if (!text.includes('github')) return -1;
+
+        let score = 0;
+        if (element.matches('a[href]')) score += 4;
+        if (text.includes('/github')) score += 5;
+        if (text.includes('github sync')) score += 5;
+        if (text === 'github') score += 4;
+        if (text.includes('sync')) score += 4;
+        if (text.includes('integration')) score += 3;
+        if (text.includes('git')) score += 2;
+        if (text.includes('link')) score += 2;
+        if (text.includes('settings')) score += 1;
+        if (isVisible(element)) score += 2;
+        if (element.closest('[role="menu"], [role="dialog"], [data-testid*="menu"]')) score += 2;
+        if (element.classList.contains(BUTTON_CLASS)) score = -1;
+        return score;
+    }
+
+    function rankCandidates(selector, scoreFn) {
+        return [...document.querySelectorAll(selector)]
+            .map(element => ({ element, score: scoreFn(element) }))
+            .filter(candidate => candidate.score >= 0)
+            .sort((left, right) => right.score - left.score);
+    }
+
+    function findGitHubTarget() {
+        return rankCandidates('a, button, [role="menuitem"], [data-testid], [aria-label], [title]', getTargetScore)[0]?.element || null;
+    }
+
+    function getMenuTriggerScore(element) {
+        const text = getClickableText(element);
+
+        if (!element.matches('button, [role="button"]')) return -1;
+        if (!isVisible(element)) return -1;
+
+        let score = 0;
+        if (text.includes('menu')) score += 4;
+        if (text.includes('project')) score += 2;
+        if (text.includes('settings')) score += 2;
+        if (text.includes('source')) score += 1;
+        if (text.includes('github')) score += 6;
+        if (element.getAttribute('aria-haspopup') === 'menu') score += 2;
+        if (element.closest('header')) score += 2;
+        return score;
+    }
+
+    function findMenuTrigger() {
+        return rankCandidates('button, [role="button"]', getMenuTriggerScore)
+            .filter(candidate => candidate.score > 0)
+            .map(candidate => candidate.element)
+            .filter(Boolean);
+    }
+
+    function wait(ms) {
+        return new Promise(resolve => window.setTimeout(resolve, ms));
+    }
+
+    function triggerClick(element) {
+        if (!element) return false;
+        element.focus?.({ preventScroll: true });
+        if (typeof element.click === 'function') {
+            element.click();
+            return true;
+        }
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+    }
+
+    function activateTarget(target) {
+        const href = target.getAttribute('href');
+        if (href && href !== '#') {
+            const destination = new URL(href, window.location.origin).toString();
+            window.open(destination, '_blank', 'noopener noreferrer');
+            return true;
+        }
+
+        return triggerClick(target);
+    }
+
+    function openProjectSettings(shortcutButton) {
+        const projectId = getProjectId();
+        if (!projectId) return false;
+        window.open(new URL(`/project/${encodeURIComponent(projectId)}/settings`, window.location.origin).toString(), '_blank', 'noopener noreferrer');
+        setStatus(shortcutButton, 'Opened project settings');
+        return true;
+    }
+
+    async function openGitHubIntegration(shortcutButton) {
+        setStatus(shortcutButton, 'Opening GitHub…');
+
+        let target = findGitHubTarget();
+        if (target) {
+            activateTarget(target);
+            setStatus(shortcutButton, 'Opened GitHub integration');
+            return;
+        }
+
+        for (const menuTrigger of findMenuTrigger().slice(0, 5)) {
+            triggerClick(menuTrigger);
+            await wait(250);
+            target = findGitHubTarget();
+            if (target) {
+                activateTarget(target);
+                setStatus(shortcutButton, 'Opened GitHub integration');
+                return;
+            }
+        }
+
+        if (openProjectSettings(shortcutButton)) return;
+
+        setStatus(shortcutButton, 'GitHub integration button not visible.', true);
+    }
+
+    function makeCompactToolbarButton(button, label, iconMarkup, title) {
+        button.draggable = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('data-ol-loading');
+        button.setAttribute('role', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = title;
+        button.style.pointerEvents = 'auto';
+        button.style.cursor = 'pointer';
+        button.style.minWidth = '32px';
+        button.style.width = '32px';
+        button.style.height = '32px';
+        button.style.padding = '0';
+        button.style.display = 'inline-flex';
+        button.style.alignItems = 'center';
+        button.style.justifyContent = 'center';
+        button.innerHTML = iconMarkup;
+        return button;
+    }
+
+    function createShortcutButton(referenceButton) {
+        let button = document.querySelector(`.${BUTTON_CLASS}`);
+        if (button) return button;
+
+        button = referenceButton.cloneNode(true);
+        button.classList.add(BUTTON_CLASS);
+        button.removeAttribute('href');
+        button.href = '#';
+        makeCompactToolbarButton(button, 'Open GitHub integration', getGitHubIconMarkup(), 'Open GitHub integration');
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openGitHubIntegration(button);
+        });
+        return button;
+    }
+
+    function addShortcutButton() {
+        const pdfButton = getPdfButton();
+        if (!pdfButton?.parentElement) return;
+
+        const referenceButton = getZipButton() || pdfButton;
+        const shortcutButton = createShortcutButton(referenceButton);
+
+        if (shortcutButton.parentElement !== pdfButton.parentElement) {
+            pdfButton.parentElement.insertBefore(shortcutButton, referenceButton.nextSibling);
+        }
+
+        getStatusElement(shortcutButton);
+    }
+
+    const observer = new MutationObserver(() => addShortcutButton());
+
+    function init() {
+        observer.observe(document.body, { childList: true, subtree: true });
+        addShortcutButton();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();

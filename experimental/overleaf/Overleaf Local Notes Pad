@@ -1,0 +1,119 @@
+// ==UserScript==
+// @name         Overleaf Local Notes Pad
+// @namespace    http://tampermonkey.net/
+// @version      0.1.0
+// @description  Add a small local-only scratchpad for each Overleaf project
+// @match        https://*.overleaf.com/project/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Local%20Notes%20Pad
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/Overleaf%20Local%20Notes%20Pad
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafLocalNotesPadInitialized) return;
+    window.__overleafLocalNotesPadInitialized = true;
+
+    const ROOT_ID = 'overleaf-local-notes-pad';
+    const COLLAPSED_KEY = 'overleaf-local-notes-collapsed';
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : 'unknown-project';
+    }
+
+    function getStorageKey() {
+        return `overleaf-local-notes:${getProjectId()}`;
+    }
+
+    function getCollapsed() {
+        return localStorage.getItem(COLLAPSED_KEY) === '1';
+    }
+
+    function setCollapsed(collapsed) {
+        localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+        const root = document.getElementById(ROOT_ID);
+        if (!root) return;
+        const body = root.querySelector('[data-role="body"]');
+        const toggle = root.querySelector('[data-role="toggle"]');
+        if (body) body.style.display = collapsed ? 'none' : 'flex';
+        if (toggle) toggle.textContent = collapsed ? 'Open notes' : 'Hide notes';
+    }
+
+    function ensureRoot() {
+        let root = document.getElementById(ROOT_ID);
+        if (root) return root;
+        root = document.createElement('section');
+        root.id = ROOT_ID;
+        root.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:2147483647;display:flex;flex-direction:column;gap:8px;width:min(90vw,320px);padding:10px 12px;background:rgba(255,255,255,0.97);border:1px solid #d0d7de;border-radius:14px;box-shadow:0 8px 24px rgba(31,35,40,0.12);backdrop-filter:blur(6px);';
+
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;';
+
+        const title = document.createElement('strong');
+        title.textContent = 'Local notes';
+        title.style.cssText = 'font:700 12px/1.2 system-ui,sans-serif;color:#24292f;';
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'display:flex;gap:6px;';
+
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.textContent = 'Clear';
+        clear.style.cssText = 'border:1px solid #d0d7de;border-radius:999px;background:#f6f8fa;padding:4px 8px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;';
+        clear.addEventListener('click', () => {
+            const textarea = root.querySelector('textarea');
+            if (!textarea) return;
+            textarea.value = '';
+            localStorage.removeItem(getStorageKey());
+        });
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.dataset.role = 'toggle';
+        toggle.style.cssText = 'border:1px solid #d0d7de;border-radius:999px;background:#f6f8fa;padding:4px 8px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;';
+        toggle.addEventListener('click', () => setCollapsed(!getCollapsed()));
+
+        controls.append(clear, toggle);
+        header.append(title, controls);
+
+        const body = document.createElement('div');
+        body.dataset.role = 'body';
+        body.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+
+        const help = document.createElement('p');
+        help.textContent = 'Stored locally in your browser for this project only.';
+        help.style.cssText = 'margin:0;font:500 12px/1.4 system-ui,sans-serif;color:#57606a;';
+
+        const textarea = document.createElement('textarea');
+        textarea.rows = 8;
+        textarea.placeholder = 'Jot down compile notes, TODOs, reviewer feedback, or submission reminders…';
+        textarea.style.cssText = 'width:100%;resize:vertical;min-height:140px;border:1px solid #d0d7de;border-radius:10px;padding:10px;font:500 12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:#ffffff;color:#24292f;box-sizing:border-box;';
+        textarea.value = localStorage.getItem(getStorageKey()) || '';
+        let saveTimer = null;
+        textarea.addEventListener('input', () => {
+            clearTimeout(saveTimer);
+            saveTimer = window.setTimeout(() => {
+                localStorage.setItem(getStorageKey(), textarea.value);
+            }, 150);
+        });
+
+        body.append(help, textarea);
+        root.append(header, body);
+        document.body.appendChild(root);
+        setCollapsed(getCollapsed());
+        return root;
+    }
+
+    function init() {
+        ensureRoot();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();
