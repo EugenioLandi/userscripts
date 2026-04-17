@@ -58,7 +58,7 @@
         return match ? match[1] : null;
     }
 
-    function getCurrentProjectStorageId() {
+    function getCurrentProjectIdOrEmpty() {
         return getProjectId() || '';
     }
 
@@ -490,14 +490,14 @@
         state.footerText = '';
         panelDefinition.render(body, getPanelApi(panelDefinition.id));
         footer.textContent = state.footerText;
-        panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectStorageId();
+        panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectIdOrEmpty();
         panelRoot.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         panelRoot.classList.add('is-open');
     }
 
     function shouldRenderPanel(panelRoot, panelDefinition) {
         if (!panelRoot) return true;
-        const currentProjectId = getCurrentProjectStorageId();
+        const currentProjectId = getCurrentProjectIdOrEmpty();
         const currentRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
         if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== currentProjectId) return true;
         if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== currentRenderVersion) return true;
