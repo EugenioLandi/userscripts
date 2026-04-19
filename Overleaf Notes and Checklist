@@ -51,7 +51,7 @@
         refreshTimer: null,
         observer: null,
         resizeTimer: null,
-        zIndex: 1_000_000,
+        zIndex: 100_000,
         lastHref: window.location.href,
         lastProjectId: getProjectId(),
     };
@@ -193,7 +193,7 @@
             }
             [${WIDGET_ATTR}] {
                 position: fixed;
-                z-index: 1000000;
+                z-index: 100000;
                 display: none;
                 flex-direction: column;
                 width: min(${DEFAULT_WIDGET_WIDTH}px, calc(100vw - ${WIDGET_PADDING * 2}px));
