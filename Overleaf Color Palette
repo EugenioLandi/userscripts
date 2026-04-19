@@ -1,0 +1,850 @@
+// ==UserScript==
+// @name         Overleaf Color Palette
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Add a sidebar button that opens a floating xcolor palette in Overleaf
+// @author       You
+// @match        https://*.overleaf.com/project/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20Color%20Palette
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20Color%20Palette
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafColorPaletteInitialized) return;
+    window.__overleafColorPaletteInitialized = true;
+
+    const CONFIG = {
+        slug: 'color-palette',
+        title: 'Color palette',
+        subtitle: 'Preview colors and copy xcolor definitions or textcolor snippets',
+        icon: '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"7\"/><path d=\"M12 5v14\"/><path d=\"M5 12h14\"/></svg>',
+        defaultWidth: 420,
+        defaultHeight: 540,
+        minWidth: 340,
+        minHeight: 360,
+        defaultData: {"name": "accentblue", "hex": "#1A73E8", "sample": "Highlighted text", "search": ""},
+    };
+
+    const STYLE_ID = `overleaf-floating-widget-style-${CONFIG.slug}`;
+    const BUTTON_ATTR = `data-overleaf-floating-widget-button-${CONFIG.slug}`;
+    const WIDGET_ID = `overleaf-floating-widget-${CONFIG.slug}`;
+    const TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
+    const FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
+    const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
+    const DOM_SYNC_DEBOUNCE_MS = 150;
+    const WIDGET_PADDING = 16;
+    const WIDGET_MIN_TOP = 72;
+    const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a, label';
+
+    const state = {
+        widget: null,
+        refreshTimer: null,
+        observer: null,
+        resizeTimer: null,
+        zIndex: 100_000,
+        lastHref: window.location.href,
+    };
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
+    }
+
+    function getProjectName() {
+        const selectors = [
+            '.ide-redesign-toolbar-project-name',
+            '[data-testid="project-name"]',
+            'input[aria-label="Project name"]',
+            'input[name="projectName"]',
+        ];
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            const value = element?.value || element?.textContent;
+            if (value && value.trim()) return value.trim();
+        }
+        return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
+    }
+
+    function getStorageKey(kind) {
+        return `overleaf-floating-widget:${CONFIG.slug}:${getProjectId() || 'unknown-project'}:${kind}`;
+    }
+
+    function cloneDefaultData() {
+        return JSON.parse(JSON.stringify(CONFIG.defaultData));
+    }
+
+    function readJson(key, fallback) {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+            return parsed ?? fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function writeJson(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+            // ignore quota errors
+        }
+    }
+
+    function readData() {
+        return readJson(getStorageKey('data'), cloneDefaultData());
+    }
+
+    function writeData(value) {
+        writeJson(getStorageKey('data'), value);
+    }
+
+    async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+        document.body.appendChild(textarea);
+        textarea.select();
+        if (typeof document.execCommand === 'function' && document.queryCommandSupported?.('copy') !== false) {
+            document.execCommand('copy');
+        }
+        textarea.remove();
+    }
+
+    function resolveContext() {
+        const tabsWrapper = document.querySelector(TABS_WRAPPER_SELECTOR);
+        const fileTreeButton = tabsWrapper?.querySelector(FILE_TREE_TAB_SELECTOR) || null;
+        const templateButton = fileTreeButton || tabsWrapper?.querySelector('button, [role="tab"]') || null;
+        return { tabsWrapper, templateButton };
+    }
+
+    function parseLuminance(colorString) {
+        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!match) return 0.5;
+        const [r, g, b] = [+match[1], +match[2], +match[3]];
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    }
+
+    function colorWithAlpha(colorString, alpha, fallback) {
+        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!match) return fallback;
+        return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
+    }
+
+    function detectTheme() {
+        const nativePane = document.querySelector(`${NATIVE_TAB_CONTENT_SELECTOR} .tab-pane.active`) || document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
+        const styles = nativePane ? getComputedStyle(nativePane) : null;
+        const bg = styles?.backgroundColor || '';
+        const fg = styles?.color || '';
+        const border = styles?.borderColor || '';
+        const isDark = bg && parseLuminance(bg) < 0.35;
+        return {
+            bg: colorWithAlpha(bg, isDark ? 0.96 : 0.97, isDark ? 'rgba(27, 39, 51, 0.96)' : 'rgba(255, 255, 255, 0.97)'),
+            fg: fg || (isDark ? '#d9e0e8' : '#1b2733'),
+            border: colorWithAlpha(border, isDark ? 0.3 : 0.22, isDark ? 'rgba(200,210,220,0.3)' : 'rgba(125,125,125,0.22)'),
+            muted: isDark ? 'rgba(196,206,216,0.88)' : 'rgba(75,85,95,0.92)',
+            buttonBg: isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.12)',
+            hover: isDark ? 'rgba(200,210,220,0.18)' : 'rgba(125,125,125,0.16)',
+            inputBg: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.94)',
+            cardBg: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.82)',
+            activeButtonBg: isDark ? 'rgba(200,210,220,0.24)' : 'rgba(20, 115, 230, 0.18)',
+        };
+    }
+
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            [${BUTTON_ATTR}] {
+                position: relative;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                align-self: center !important;
+                margin-inline: auto;
+                padding: 0 !important;
+                box-sizing: border-box;
+            }
+            [${BUTTON_ATTR}] .ide-rail-tab-link-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
+                pointer-events: none;
+            }
+            [${BUTTON_ATTR}] .ide-rail-tab-link-icon svg {
+                width: 20px;
+                height: 20px;
+                display: block;
+                flex: 0 0 auto;
+            }
+            [${BUTTON_ATTR}].is-open {
+                background: var(--owf-active-button-bg, rgba(20, 115, 230, 0.18)) !important;
+                box-shadow: none !important;
+            }
+            #${WIDGET_ID} {
+                position: fixed;
+                z-index: 100000;
+                display: none;
+                flex-direction: column;
+                width: ${CONFIG.defaultWidth}px;
+                height: ${CONFIG.defaultHeight}px;
+                min-width: ${CONFIG.minWidth}px;
+                min-height: ${CONFIG.minHeight}px;
+                max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
+                max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
+                overflow: hidden;
+                resize: both;
+                border: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                border-radius: 14px;
+                background: var(--owf-bg, rgba(255,255,255,0.97));
+                color: var(--owf-fg, #1b2733);
+                box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
+                backdrop-filter: blur(14px);
+                box-sizing: border-box;
+            }
+            #${WIDGET_ID}.is-open {
+                display: flex;
+            }
+            #${WIDGET_ID}, #${WIDGET_ID} * {
+                box-sizing: border-box;
+            }
+            #${WIDGET_ID} .owf-header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 10px;
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                cursor: grab;
+                user-select: none;
+                touch-action: none;
+            }
+            #${WIDGET_ID} .owf-heading {
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+            #${WIDGET_ID} .owf-title {
+                margin: 0;
+                font-size: 0.9375rem;
+                font-weight: 700;
+                line-height: 1.35;
+            }
+            #${WIDGET_ID} .owf-subtitle {
+                margin: 3px 0 0;
+                font-size: 0.75rem;
+                line-height: 1.45;
+                color: var(--owf-muted, rgba(75,85,95,0.92));
+            }
+            #${WIDGET_ID} .owf-close {
+                flex: 0 0 auto;
+                width: 28px;
+                height: 28px;
+                border: 0;
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+                cursor: pointer;
+                font-size: 17px;
+                line-height: 1;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #${WIDGET_ID} .owf-close:hover {
+                background: var(--owf-hover, rgba(125,125,125,0.16));
+            }
+            #${WIDGET_ID} .owf-body {
+                flex: 1 1 auto;
+                min-height: 0;
+                overflow: auto;
+                padding: 14px 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            #${WIDGET_ID} .owf-footer {
+                padding: 10px 16px 14px;
+                border-top: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                font-size: 0.6875rem;
+                line-height: 1.45;
+                color: var(--owf-muted, rgba(75,85,95,0.92));
+                min-height: 14px;
+            }
+            #${WIDGET_ID} .owf-muted {
+                margin: 0;
+                font-size: 0.8125rem;
+                line-height: 1.5;
+                color: var(--owf-muted, rgba(75,85,95,0.92));
+            }
+            #${WIDGET_ID} .owf-form {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            #${WIDGET_ID} .owf-field {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                font-size: 0.75rem;
+                font-weight: 600;
+            }
+            #${WIDGET_ID} .owf-inline,
+            #${WIDGET_ID} .owf-actions,
+            #${WIDGET_ID} .owf-grid {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            #${WIDGET_ID} .owf-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+            }
+            #${WIDGET_ID} .owf-input,
+            #${WIDGET_ID} textarea,
+            #${WIDGET_ID} select {
+                width: 100%;
+                box-sizing: border-box;
+                border: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                border-radius: 8px;
+                padding: 8px 10px;
+                background: var(--owf-input-bg, rgba(255,255,255,0.94));
+                color: inherit;
+                font: inherit;
+                font-size: 0.8125rem;
+            }
+            #${WIDGET_ID} textarea {
+                min-height: 180px;
+                resize: vertical;
+                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                line-height: 1.55;
+            }
+            #${WIDGET_ID} .owf-textarea--compact {
+                min-height: 96px;
+            }
+            #${WIDGET_ID} .owf-button,
+            #${WIDGET_ID} .owf-chip,
+            #${WIDGET_ID} .owf-symbol,
+            #${WIDGET_ID} .owf-swatch {
+                border: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                border-radius: 8px;
+                padding: 7px 10px;
+                background: var(--owf-button-bg, rgba(125,125,125,0.12));
+                color: inherit;
+                cursor: pointer;
+                font-size: 0.75rem;
+                font-weight: 600;
+                line-height: 1.3;
+            }
+            #${WIDGET_ID} .owf-button:hover,
+            #${WIDGET_ID} .owf-chip:hover,
+            #${WIDGET_ID} .owf-symbol:hover,
+            #${WIDGET_ID} .owf-swatch:hover {
+                background: var(--owf-hover, rgba(125,125,125,0.16));
+            }
+            #${WIDGET_ID} .owf-toggle {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 0.75rem;
+                font-weight: 600;
+            }
+            #${WIDGET_ID} .owf-symbol {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
+                min-height: 60px;
+            }
+            #${WIDGET_ID} .owf-symbol strong {
+                font-size: 1rem;
+            }
+            #${WIDGET_ID} .owf-symbol span {
+                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                font-size: 0.7rem;
+                opacity: 0.85;
+            }
+            #${WIDGET_ID} .owf-color {
+                width: 48px;
+                min-width: 48px;
+                padding: 0;
+                border-radius: 8px;
+                border: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                background: transparent;
+            }
+            #${WIDGET_ID} .owf-preview {
+                border: 1px solid var(--owf-border, rgba(125,125,125,0.22));
+                border-radius: 10px;
+                min-height: 80px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 12px;
+                font-weight: 700;
+                color: #fff;
+                text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            }
+            #${WIDGET_ID} .owf-swatch {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                justify-content: flex-start;
+            }
+            #${WIDGET_ID} .owf-swatch__dot {
+                width: 14px;
+                height: 14px;
+                border-radius: 999px;
+                border: 1px solid rgba(255,255,255,0.4);
+                box-shadow: 0 0 0 1px rgba(0,0,0,0.1);
+                flex: 0 0 auto;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function replaceButtonIcon(button) {
+        const wrapper = document.createElement('span');
+        wrapper.innerHTML = CONFIG.icon.trim();
+        const icon = wrapper.firstElementChild;
+        if (!icon) return;
+        const iconSlot = document.createElement('span');
+        iconSlot.className = 'ide-rail-tab-link-icon';
+        iconSlot.setAttribute('aria-hidden', 'true');
+        iconSlot.appendChild(icon);
+        button.replaceChildren(iconSlot);
+    }
+
+    function createSidebarButton(templateButton) {
+        const button = document.createElement('button');
+        const classList = templateButton
+            ? [...templateButton.classList].filter(cls => !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(cls))
+            : ['nav-link'];
+        button.className = classList.join(' ');
+        button.type = 'button';
+        button.setAttribute(BUTTON_ATTR, '1');
+        button.setAttribute('aria-label', CONFIG.title);
+        button.setAttribute('title', CONFIG.title);
+        replaceButtonIcon(button);
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleWidget();
+        }, true);
+        return button;
+    }
+
+    function bringToFront() {
+        const widget = state.widget;
+        if (!widget) return;
+        state.zIndex += 1;
+        widget.style.zIndex = String(state.zIndex);
+    }
+
+    function clampSize(size) {
+        return {
+            width: Math.min(Math.max(CONFIG.minWidth, Math.round(size.width || CONFIG.defaultWidth)), Math.max(CONFIG.minWidth, window.innerWidth - WIDGET_PADDING * 2)),
+            height: Math.min(Math.max(CONFIG.minHeight, Math.round(size.height || CONFIG.defaultHeight)), Math.max(CONFIG.minHeight, window.innerHeight - WIDGET_MIN_TOP - WIDGET_PADDING)),
+        };
+    }
+
+    function clampPosition(widget, position) {
+        const width = widget.offsetWidth || CONFIG.defaultWidth;
+        const height = widget.offsetHeight || CONFIG.defaultHeight;
+        return {
+            x: Math.min(Math.max(WIDGET_PADDING, Math.round(position.x)), Math.max(WIDGET_PADDING, window.innerWidth - width - WIDGET_PADDING)),
+            y: Math.min(Math.max(WIDGET_MIN_TOP, Math.round(position.y)), Math.max(WIDGET_MIN_TOP, window.innerHeight - height - WIDGET_PADDING)),
+        };
+    }
+
+    function getDefaultPosition() {
+        return {
+            x: Math.max(WIDGET_PADDING, Math.round((window.innerWidth - CONFIG.defaultWidth) / 2)),
+            y: 112,
+        };
+    }
+
+    function applySize(widget, size, persist = true) {
+        const next = clampSize(size);
+        widget.style.width = `${next.width}px`;
+        widget.style.height = `${next.height}px`;
+        if (persist) writeJson(getStorageKey('size'), next);
+    }
+
+    function applyPosition(widget, position, persist = true) {
+        const next = clampPosition(widget, position);
+        widget.style.left = `${next.x}px`;
+        widget.style.top = `${next.y}px`;
+        if (persist) writeJson(getStorageKey('position'), next);
+    }
+
+    function restoreGeometry(widget) {
+        applySize(widget, readJson(getStorageKey('size'), { width: CONFIG.defaultWidth, height: CONFIG.defaultHeight }), false);
+        applyPosition(widget, readJson(getStorageKey('position'), getDefaultPosition()), false);
+    }
+
+    function captureGeometry() {
+        const widget = state.widget;
+        if (!widget || !widget.classList.contains('is-open')) return;
+        const rect = widget.getBoundingClientRect();
+        applySize(widget, { width: rect.width, height: rect.height });
+        applyPosition(widget, { x: rect.left, y: rect.top });
+    }
+
+    function setFooterText(widget, text) {
+        const footer = widget.querySelector('.owf-footer');
+        if (footer) footer.textContent = String(text || '');
+    }
+
+    function applyTheme(widget) {
+        const theme = detectTheme();
+        widget.style.setProperty('--owf-bg', theme.bg);
+        widget.style.setProperty('--owf-fg', theme.fg);
+        widget.style.setProperty('--owf-border', theme.border);
+        widget.style.setProperty('--owf-muted', theme.muted);
+        widget.style.setProperty('--owf-button-bg', theme.buttonBg);
+        widget.style.setProperty('--owf-hover', theme.hover);
+        widget.style.setProperty('--owf-input-bg', theme.inputBg);
+        widget.style.setProperty('--owf-card-bg', theme.cardBg);
+        document.documentElement.style.setProperty('--owf-active-button-bg', theme.activeButtonBg);
+    }
+
+    function updateButtonState() {
+        const button = document.querySelector(`[${BUTTON_ATTR}]`);
+        const open = Boolean(state.widget && state.widget.classList.contains('is-open'));
+        if (!button) return;
+        button.classList.toggle('is-open', open);
+        button.setAttribute('aria-pressed', open ? 'true' : 'false');
+    }
+
+    function makeDraggable(widget, handle) {
+        let pointerId = null;
+        let originX = 0;
+        let originY = 0;
+        let startX = 0;
+        let startY = 0;
+
+        handle.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            if (event.target instanceof Element && event.target.closest(DRAG_IGNORE_SELECTOR)) return;
+            pointerId = event.pointerId;
+            handle.setPointerCapture(pointerId);
+            const rect = widget.getBoundingClientRect();
+            originX = rect.left;
+            originY = rect.top;
+            startX = event.clientX;
+            startY = event.clientY;
+            handle.style.cursor = 'grabbing';
+            bringToFront();
+            event.preventDefault();
+        });
+
+        handle.addEventListener('pointermove', event => {
+            if (event.pointerId !== pointerId) return;
+            applyPosition(widget, {
+                x: originX + event.clientX - startX,
+                y: originY + event.clientY - startY,
+            });
+        });
+
+        const release = event => {
+            if (event.pointerId !== pointerId) return;
+            pointerId = null;
+            handle.style.cursor = 'grab';
+        };
+
+        handle.addEventListener('pointerup', release);
+        handle.addEventListener('pointercancel', release);
+    }
+
+    function ensureWidget() {
+        if (state.widget?.isConnected) return state.widget;
+
+        const widget = document.createElement('section');
+        widget.id = WIDGET_ID;
+        widget.hidden = true;
+
+        const header = document.createElement('div');
+        header.className = 'owf-header';
+
+        const heading = document.createElement('div');
+        heading.className = 'owf-heading';
+        const title = document.createElement('h2');
+        title.className = 'owf-title';
+        title.textContent = CONFIG.title;
+        const subtitle = document.createElement('p');
+        subtitle.className = 'owf-subtitle';
+        subtitle.textContent = CONFIG.subtitle;
+        heading.append(title, subtitle);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'owf-close';
+        close.textContent = '×';
+        close.setAttribute('aria-label', `Close ${CONFIG.title}`);
+        close.addEventListener('click', closeWidget);
+
+        header.append(heading, close);
+
+        const body = document.createElement('div');
+        body.className = 'owf-body';
+        const footer = document.createElement('div');
+        footer.className = 'owf-footer';
+
+        widget.append(header, body, footer);
+        widget.addEventListener('pointerdown', bringToFront, true);
+        document.body.appendChild(widget);
+        applyTheme(widget);
+        makeDraggable(widget, header);
+        state.widget = widget;
+        return widget;
+    }
+
+    function renderWidget() {
+        const widget = ensureWidget();
+        const body = widget.querySelector('.owf-body');
+        if (!body) return;
+        body.textContent = '';
+        applyTheme(widget);
+        const data = readData();
+
+        const PRESETS = [
+            ['accentblue', '#1A73E8'], ['forestgreen', '#228B22'], ['burntorange', '#CC5500'], ['deepviolet', '#6A0DAD'], ['crimsonnote', '#B22222'], ['coolgray', '#708090'], ['tealwave', '#008080'], ['goldhighlight', '#D4A017'],
+        ];
+
+        function normalizeHex(value) {
+            const raw = String(value || '').trim();
+            return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : '#1A73E8';
+        }
+
+        const formState = { ...data };
+        const form = document.createElement('div');
+        form.className = 'owf-form';
+        body.appendChild(form);
+
+        const preview = document.createElement('div');
+        preview.className = 'owf-preview';
+        const defineOutput = document.createElement('textarea');
+        defineOutput.className = 'owf-textarea owf-textarea--compact';
+        const textOutput = document.createElement('textarea');
+        textOutput.className = 'owf-textarea owf-textarea--compact';
+        const search = document.createElement('input');
+        search.className = 'owf-input';
+        search.placeholder = 'Filter presets…';
+        search.value = formState.search || '';
+        const presetGrid = document.createElement('div');
+        presetGrid.className = 'owf-grid';
+
+        function refreshOutputs() {
+            formState.hex = normalizeHex(formState.hex);
+            writeData(formState);
+            picker.value = formState.hex;
+            hexInput.value = formState.hex;
+            nameInput.value = formState.name;
+            sampleInput.value = formState.sample;
+            search.value = formState.search || '';
+            preview.style.background = formState.hex;
+            preview.textContent = formState.sample || 'Preview';
+            defineOutput.value = `\\definecolor{${formState.name || 'accentblue'}}{HTML}{${formState.hex.slice(1)}}`;
+            textOutput.value = `\\textcolor{${formState.name || 'accentblue'}}{${formState.sample || 'Highlighted text'}}`;
+            setFooterText(widget, `${PRESETS.length} preset colors available`);
+        }
+
+        function renderPresets() {
+            presetGrid.textContent = '';
+            const filter = String(formState.search || '').trim().toLowerCase();
+            PRESETS.filter(([name, hex]) => `${name} ${hex}`.toLowerCase().includes(filter)).forEach(([name, hex]) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'owf-swatch';
+                button.innerHTML = `<span class="owf-swatch__dot" style="background:${hex};"></span><span>${name}</span>`;
+                button.addEventListener('click', () => {
+                    formState.name = name;
+                    formState.hex = hex;
+                    refreshOutputs();
+                });
+                presetGrid.appendChild(button);
+            });
+        }
+
+        const nameField = document.createElement('label');
+        nameField.className = 'owf-field';
+        const nameLabel = document.createElement('span');
+        nameLabel.textContent = 'Color name';
+        const nameInput = document.createElement('input');
+        nameInput.className = 'owf-input';
+        nameInput.value = formState.name;
+        nameInput.addEventListener('input', () => {
+            formState.name = nameInput.value;
+            refreshOutputs();
+        });
+        nameField.append(nameLabel, nameInput);
+        form.appendChild(nameField);
+
+        const hexField = document.createElement('label');
+        hexField.className = 'owf-field';
+        const hexLabel = document.createElement('span');
+        hexLabel.textContent = 'Hex value';
+        const hexWrap = document.createElement('div');
+        hexWrap.className = 'owf-inline';
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.className = 'owf-color';
+        picker.value = normalizeHex(formState.hex);
+        picker.addEventListener('input', () => {
+            formState.hex = picker.value;
+            refreshOutputs();
+        });
+        const hexInput = document.createElement('input');
+        hexInput.className = 'owf-input';
+        hexInput.value = normalizeHex(formState.hex);
+        hexInput.addEventListener('input', () => {
+            formState.hex = hexInput.value;
+            refreshOutputs();
+        });
+        hexWrap.append(picker, hexInput);
+        hexField.append(hexLabel, hexWrap);
+        form.appendChild(hexField);
+
+        const sampleField = document.createElement('label');
+        sampleField.className = 'owf-field';
+        const sampleLabel = document.createElement('span');
+        sampleLabel.textContent = 'Sample text';
+        const sampleInput = document.createElement('input');
+        sampleInput.className = 'owf-input';
+        sampleInput.value = formState.sample;
+        sampleInput.addEventListener('input', () => {
+            formState.sample = sampleInput.value;
+            refreshOutputs();
+        });
+        sampleField.append(sampleLabel, sampleInput);
+        form.appendChild(sampleField);
+
+        body.appendChild(preview);
+        body.appendChild(defineOutput);
+        body.appendChild(textOutput);
+
+        search.addEventListener('input', () => {
+            formState.search = search.value;
+            writeData(formState);
+            renderPresets();
+        });
+        body.appendChild(search);
+        body.appendChild(presetGrid);
+
+        const actions = document.createElement('div');
+        actions.className = 'owf-actions';
+        [
+            ['Copy definecolor', defineOutput],
+            ['Copy textcolor', textOutput],
+        ].forEach(([labelText, target]) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'owf-button';
+            button.textContent = labelText;
+            button.addEventListener('click', async () => {
+                await copyText(target.value);
+                setFooterText(widget, `${labelText} copied`);
+            });
+            actions.appendChild(button);
+        });
+        body.appendChild(actions);
+
+        refreshOutputs();
+        renderPresets();
+        
+    }
+
+    function openWidget() {
+        const widget = ensureWidget();
+        renderWidget();
+        widget.hidden = false;
+        widget.classList.add('is-open');
+        restoreGeometry(widget);
+        bringToFront();
+        updateButtonState();
+    }
+
+    function closeWidget() {
+        const widget = state.widget;
+        if (!widget) return;
+        captureGeometry();
+        widget.classList.remove('is-open');
+        widget.hidden = true;
+        updateButtonState();
+    }
+
+    function toggleWidget() {
+        const widget = ensureWidget();
+        if (widget.classList.contains('is-open')) {
+            closeWidget();
+        } else {
+            openWidget();
+        }
+    }
+
+    function syncButton() {
+        const context = resolveContext();
+        if (!context.tabsWrapper || !context.templateButton) return;
+        let button = context.tabsWrapper.querySelector(`[${BUTTON_ATTR}]`);
+        if (!button) {
+            button = createSidebarButton(context.templateButton);
+            context.tabsWrapper.appendChild(button);
+        }
+        updateButtonState();
+    }
+
+    function scheduleSync(delay = 0) {
+        window.clearTimeout(state.refreshTimer);
+        state.refreshTimer = window.setTimeout(() => {
+            syncButton();
+            const widget = state.widget;
+            if (widget) applyTheme(widget);
+        }, delay);
+    }
+
+    function watchDom() {
+        if (state.observer) return;
+        state.observer = new MutationObserver(() => {
+            if (state.lastHref !== window.location.href) {
+                state.lastHref = window.location.href;
+            }
+            scheduleSync(DOM_SYNC_DEBOUNCE_MS);
+        });
+        state.observer.observe(document.documentElement, { childList: true, subtree: true });
+        window.addEventListener('mouseup', captureGeometry, true);
+        window.addEventListener('pointerup', captureGeometry, true);
+        window.addEventListener('resize', () => {
+            window.clearTimeout(state.resizeTimer);
+            state.resizeTimer = window.setTimeout(() => {
+                if (state.widget?.classList.contains('is-open')) {
+                    captureGeometry();
+                }
+            }, DOM_SYNC_DEBOUNCE_MS);
+        });
+        window.addEventListener('focus', () => scheduleSync(0));
+        window.addEventListener('popstate', () => scheduleSync(0));
+        window.addEventListener('hashchange', () => scheduleSync(0));
+    }
+
+    function boot() {
+        if (!document.body) {
+            window.setTimeout(boot, 100);
+            return;
+        }
+        ensureStyle();
+        watchDom();
+        scheduleSync(0);
+    }
+
+    boot();
+})();

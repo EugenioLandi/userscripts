@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf Notes and Checklist
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Add centered Overleaf sidebar buttons for independent floating notes and checklist widgets
 // @author       You
 // @match        https://*.overleaf.com/project/*
@@ -28,6 +28,9 @@
     const WIDGET_PADDING = 16;
     const WIDGET_MIN_TOP = 72;
     const DEFAULT_WIDGET_WIDTH = 360;
+    const DEFAULT_WIDGET_HEIGHT = 360;
+    const MIN_WIDGET_WIDTH = 320;
+    const MIN_WIDGET_HEIGHT = 220;
 
     const PANEL_DEFS = [
         {
@@ -36,6 +39,7 @@
             subtitle: 'Project notes stored only in this browser',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 11h6"/><path d="M10 15h6"/><path d="M10 19h4"/></svg>',
             defaultPosition: { x: 120, y: 112 },
+            defaultSize: { width: 360, height: 380 },
         },
         {
             id: 'checklist',
@@ -43,6 +47,7 @@
             subtitle: 'Local project tasks stored only in this browser',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M9 17l2 2 4-4"/><path d="M5 6h14"/></svg>',
             defaultPosition: { x: 520, y: 112 },
+            defaultSize: { width: 380, height: 420 },
         },
     ];
 
@@ -86,6 +91,10 @@
 
     function getPositionStorageKey(panelId) {
         return `overleaf-notes-checklist:${panelId}:position`;
+    }
+
+    function getSizeStorageKey(panelId) {
+        return `overleaf-notes-checklist:${panelId}:size`;
     }
 
     function readJson(key, fallback) {
@@ -137,6 +146,12 @@
         return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     }
 
+    function colorWithAlpha(colorString, alpha, fallback) {
+        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!match) return fallback;
+        return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
+    }
+
     function detectTheme() {
         const nativePane = document.querySelector(`${NATIVE_TAB_CONTENT_SELECTOR} .tab-pane.active`) || document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
         const styles = nativePane ? getComputedStyle(nativePane) : null;
@@ -145,16 +160,16 @@
         const border = styles?.borderColor || '';
         const isDark = bg && parseLuminance(bg) < 0.35;
         return {
-            bg: bg || (isDark ? '#1b2733' : '#ffffff'),
+            bg: colorWithAlpha(bg, isDark ? 0.96 : 0.97, isDark ? 'rgba(27, 39, 51, 0.96)' : 'rgba(255, 255, 255, 0.97)'),
             fg: fg || (isDark ? '#d9e0e8' : '#1b2733'),
-            border: border || (isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.18)'),
-            muted: isDark ? 'rgba(180,190,200,0.72)' : 'rgba(90,100,110,0.88)',
-            buttonBg: isDark ? 'rgba(200,210,220,0.06)' : 'rgba(125,125,125,0.06)',
-            hover: isDark ? 'rgba(200,210,220,0.08)' : 'rgba(125,125,125,0.1)',
-            inputBg: isDark ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.88)',
-            focus: isDark ? '#5ca0e8' : '#1a73e8',
-            cardBg: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.5)',
-            activeButtonBg: isDark ? 'rgba(200,210,220,0.14)' : 'rgba(20, 115, 230, 0.12)',
+            border: colorWithAlpha(border, isDark ? 0.3 : 0.22, isDark ? 'rgba(200,210,220,0.3)' : 'rgba(125,125,125,0.22)'),
+            muted: isDark ? 'rgba(196,206,216,0.88)' : 'rgba(75,85,95,0.92)',
+            buttonBg: isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.12)',
+            hover: isDark ? 'rgba(200,210,220,0.18)' : 'rgba(125,125,125,0.16)',
+            inputBg: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.94)',
+            focus: isDark ? '#79b8ff' : '#1a73e8',
+            cardBg: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.82)',
+            activeButtonBg: isDark ? 'rgba(200,210,220,0.24)' : 'rgba(20, 115, 230, 0.18)',
         };
     }
 
@@ -196,14 +211,17 @@
                 z-index: 100000;
                 display: none;
                 flex-direction: column;
-                width: min(${DEFAULT_WIDGET_WIDTH}px, calc(100vw - ${WIDGET_PADDING * 2}px));
+                width: ${DEFAULT_WIDGET_WIDTH}px;
+                height: ${DEFAULT_WIDGET_HEIGHT}px;
+                min-width: ${MIN_WIDGET_WIDTH}px;
+                min-height: ${MIN_WIDGET_HEIGHT}px;
                 max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
                 max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
-                min-height: 220px;
                 overflow: hidden;
+                resize: both;
                 border: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.18));
                 border-radius: 14px;
-                background: var(--overleaf-notes-checklist-bg, #fff);
+                background: var(--overleaf-notes-checklist-bg, rgba(255, 255, 255, 0.97));
                 color: var(--overleaf-notes-checklist-fg, #1b2733);
                 box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
             }
@@ -386,7 +404,7 @@
 
     function clampPosition(widget, position) {
         const width = widget.offsetWidth || DEFAULT_WIDGET_WIDTH;
-        const height = widget.offsetHeight || 320;
+        const height = widget.offsetHeight || DEFAULT_WIDGET_HEIGHT;
         return {
             x: Math.min(Math.max(WIDGET_PADDING, Math.round(position.x)), Math.max(WIDGET_PADDING, window.innerWidth - width - WIDGET_PADDING)),
             y: Math.min(Math.max(WIDGET_MIN_TOP, Math.round(position.y)), Math.max(WIDGET_MIN_TOP, window.innerHeight - height - WIDGET_PADDING)),
@@ -398,6 +416,33 @@
         widget.style.left = `${next.x}px`;
         widget.style.top = `${next.y}px`;
         if (persist) writeJson(getPositionStorageKey(panelId), next);
+    }
+
+    function clampSize(size) {
+        return {
+            width: Math.min(Math.max(MIN_WIDGET_WIDTH, Math.round(size.width || DEFAULT_WIDGET_WIDTH)), Math.max(MIN_WIDGET_WIDTH, window.innerWidth - WIDGET_PADDING * 2)),
+            height: Math.min(Math.max(MIN_WIDGET_HEIGHT, Math.round(size.height || DEFAULT_WIDGET_HEIGHT)), Math.max(MIN_WIDGET_HEIGHT, window.innerHeight - WIDGET_MIN_TOP - WIDGET_PADDING)),
+        };
+    }
+
+    function applySize(widget, panelId, size, persist = true) {
+        const next = clampSize(size);
+        widget.style.width = `${next.width}px`;
+        widget.style.height = `${next.height}px`;
+        if (persist) writeJson(getSizeStorageKey(panelId), next);
+    }
+
+    function restoreSize(widget, panel) {
+        const saved = readJson(getSizeStorageKey(panel.id), null) || panel.defaultSize || { width: DEFAULT_WIDGET_WIDTH, height: DEFAULT_WIDGET_HEIGHT };
+        applySize(widget, panel.id, saved, false);
+    }
+
+    function captureWidgetGeometry(panel) {
+        const widget = state.widgets.get(panel.id);
+        if (!widget || !widget.classList.contains('is-open')) return;
+        const rect = widget.getBoundingClientRect();
+        applySize(widget, panel.id, { width: rect.width, height: rect.height });
+        applyPosition(widget, panel.id, { x: rect.left, y: rect.top });
     }
 
     function restorePosition(widget, panel) {
@@ -699,6 +744,7 @@
         renderWidget(panelId);
         widget.hidden = false;
         widget.classList.add('is-open');
+        restoreSize(widget, panel);
         restorePosition(widget, panel);
         bringToFront(widget);
         updateButtonState(panelId);
@@ -744,6 +790,7 @@
             applyTheme(widget);
             if (widget.classList.contains('is-open') && forceRender) {
                 renderWidget(panel.id);
+                restoreSize(widget, panel);
                 restorePosition(widget, panel);
             }
         });
@@ -772,13 +819,15 @@
         window.addEventListener('popstate', () => scheduleSync(0));
         window.addEventListener('hashchange', () => scheduleSync(0));
         window.addEventListener('focus', () => scheduleSync(0));
+        window.addEventListener('mouseup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
+        window.addEventListener('pointerup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
         window.addEventListener('resize', () => {
             window.clearTimeout(state.resizeTimer);
             state.resizeTimer = window.setTimeout(() => {
                 PANEL_DEFS.forEach(panel => {
                     const widget = state.widgets.get(panel.id);
                     if (widget && widget.classList.contains('is-open')) {
-                        restorePosition(widget, panel);
+                        captureWidgetGeometry(panel);
                     }
                 });
             }, DOM_SYNC_DEBOUNCE_MS);
