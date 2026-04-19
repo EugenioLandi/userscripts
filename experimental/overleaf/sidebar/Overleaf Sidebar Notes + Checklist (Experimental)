@@ -5,8 +5,8 @@
 // @description  Add centered Overleaf sidebar buttons that open draggable local notes and checklist panels
 // @match        https://*.overleaf.com/project/*
 // @require      https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/_nativeSidebarHost.js
-// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20%2B%20Checklist%20%28Experimental%29
-// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20%2B%20Checklist%20%28Experimental%29
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20+%20Checklist%20%28Experimental%29
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20+%20Checklist%20%28Experimental%29
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==

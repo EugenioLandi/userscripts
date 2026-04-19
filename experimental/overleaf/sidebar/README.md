@@ -17,7 +17,7 @@ content inside the same **draggable floating box**.
    userscript manager) in your browser.
 2. Open the raw URL of the script in this folder:
    ```
-   https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20%2B%20Checklist%20%28Experimental%29
+   https://raw.githubusercontent.com/EugenioLandi/userscripts/main/experimental/overleaf/sidebar/Overleaf%20Sidebar%20Notes%20+%20Checklist%20%28Experimental%29
    ```
    Tampermonkey will prompt you to install it.
 3. The script's `@require` header automatically loads the shared helper

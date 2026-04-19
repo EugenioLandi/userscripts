@@ -721,7 +721,7 @@
         }
         state.panels.set(panel.id, panel);
         if (!state.renderVersions.has(panel.id)) state.renderVersions.set(panel.id, 0);
-        if (!state.activeId || !state.panels.has(state.activeId)) state.activeId = panel.id;
+        if (!state.activeId) state.activeId = panel.id;
         persistState();
         scheduleSync(0);
     }
