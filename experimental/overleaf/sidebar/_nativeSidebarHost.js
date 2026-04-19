@@ -17,6 +17,7 @@
     const WIDGET_WIDTH = 360;
     const WIDGET_MIN_TOP = 72;
     const WIDGET_PADDING = 16;
+    const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a';
     const EXCLUDED_BUTTON_CLASSES = [
         'd-flex',
         'flex-column',
@@ -483,18 +484,18 @@
         };
     }
 
-    function applyTheme(context, widget, customButtons) {
+    function applyTheme(context, floatingWidget, customButtons) {
         const colors = detectThemeColors(context);
-        if (widget) {
-            widget.style.setProperty('--ol-sidebar-bg', colors.bg);
-            widget.style.setProperty('--ol-sidebar-fg', colors.fg);
-            widget.style.setProperty('--ol-sidebar-border', colors.border);
-            widget.style.setProperty('--ol-sidebar-muted', colors.muted);
-            widget.style.setProperty('--ol-sidebar-hover', colors.hover);
-            widget.style.setProperty('--ol-sidebar-button-bg', colors.buttonBg);
-            widget.style.setProperty('--ol-sidebar-input-bg', colors.inputBg);
-            widget.style.setProperty('--ol-sidebar-card-bg', colors.cardBg);
-            widget.style.setProperty('--ol-sidebar-focus', colors.focus);
+        if (floatingWidget) {
+            floatingWidget.style.setProperty('--ol-sidebar-bg', colors.bg);
+            floatingWidget.style.setProperty('--ol-sidebar-fg', colors.fg);
+            floatingWidget.style.setProperty('--ol-sidebar-border', colors.border);
+            floatingWidget.style.setProperty('--ol-sidebar-muted', colors.muted);
+            floatingWidget.style.setProperty('--ol-sidebar-hover', colors.hover);
+            floatingWidget.style.setProperty('--ol-sidebar-button-bg', colors.buttonBg);
+            floatingWidget.style.setProperty('--ol-sidebar-input-bg', colors.inputBg);
+            floatingWidget.style.setProperty('--ol-sidebar-card-bg', colors.cardBg);
+            floatingWidget.style.setProperty('--ol-sidebar-focus', colors.focus);
         }
 
         const fileTreeButton = context.fileTreeButton;
@@ -563,7 +564,7 @@
 
         handle.addEventListener('pointerdown', event => {
             if (event.button !== 0) return;
-            if (event.target instanceof Element && event.target.closest('button, input, textarea, select, a')) return;
+            if (event.target instanceof Element && event.target.closest(DRAG_IGNORE_SELECTOR)) return;
             pointerId = event.pointerId;
             handle.setPointerCapture(pointerId);
             const rect = widget.getBoundingClientRect();
