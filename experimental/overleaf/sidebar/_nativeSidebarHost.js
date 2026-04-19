@@ -5,19 +5,29 @@
 
     const ACTIVE_KEY = 'experimental-overleaf-native-sidebar-active';
     const OPEN_KEY = 'experimental-overleaf-native-sidebar-open';
+    const POSITION_KEY = 'experimental-overleaf-native-sidebar-position';
     const STYLE_ID = 'experimental-overleaf-native-sidebar-style';
-    const PANEL_ATTR = 'data-experimental-overleaf-native-panel';
+    const WIDGET_ID = 'experimental-overleaf-native-sidebar-floating-widget';
     const TAB_ATTR = 'data-experimental-overleaf-native-tab';
     const FOOTER_CLASS = 'experimental-overleaf-native-sidebar-footer-slot';
-    const CONTAINER_ID = 'experimental-overleaf-native-sidebar-panels';
-    const MODE_ATTR = 'data-experimental-sidebar-mode';
-    const ACTIVE_TAB_ATTR = 'data-experimental-sidebar-active';
     const NATIVE_TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
     const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
     const NATIVE_FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
-    const SIDEBAR_TOGGLE_BUTTON_SELECTOR = '.horizontal-resize-handle .custom-toggler';
-    const SIDEBAR_OPEN_DELAY_MS = 200;
     const DOM_SYNC_DEBOUNCE_MS = 150;
+    const WIDGET_WIDTH = 360;
+    const WIDGET_MIN_TOP = 72;
+    const WIDGET_PADDING = 16;
+    const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a';
+    const EXCLUDED_BUTTON_CLASSES = [
+        'd-flex',
+        'flex-column',
+        'align-items-center',
+        'justify-content-center',
+        'text-center',
+        'p-0',
+        'px-0',
+        'py-0',
+    ];
 
     const state = {
         panels: new Map(),
@@ -27,14 +37,9 @@
         footerText: '',
         refreshTimer: null,
         observer: null,
+        resizeTimer: null,
         lastHref: global.location.href,
     };
-
-    function isVisible(element) {
-        if (!element || !element.isConnected) return false;
-        const rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-    }
 
     function wait(ms) {
         return new Promise(resolve => global.setTimeout(resolve, ms));
@@ -110,7 +115,7 @@
 
     function setFooterText(text = '') {
         state.footerText = String(text || '');
-        const footer = document.querySelector(`.${FOOTER_CLASS}`);
+        const footer = document.querySelector(`#${WIDGET_ID} .${FOOTER_CLASS}`);
         if (footer) footer.textContent = state.footerText;
     }
 
@@ -121,6 +126,46 @@
         } catch {
             // localStorage quota exceeded — silently drop the write
         }
+    }
+
+    function readWidgetPosition() {
+        const stored = readJson(POSITION_KEY, null);
+        if (!stored || typeof stored !== 'object') return null;
+        if (!Number.isFinite(stored.x) || !Number.isFinite(stored.y)) return null;
+        return stored;
+    }
+
+    function writeWidgetPosition(position) {
+        writeJson(POSITION_KEY, position);
+    }
+
+    function clampWidgetPosition(position) {
+        const width = WIDGET_WIDTH;
+        const xMax = Math.max(WIDGET_PADDING, global.innerWidth - width - WIDGET_PADDING);
+        const yMax = Math.max(WIDGET_MIN_TOP, global.innerHeight - 140);
+        return {
+            x: Math.min(Math.max(WIDGET_PADDING, Math.round(position.x)), xMax),
+            y: Math.min(Math.max(WIDGET_MIN_TOP, Math.round(position.y)), yMax),
+        };
+    }
+
+    function getDefaultWidgetPosition() {
+        return clampWidgetPosition({
+            x: Math.round((global.innerWidth - WIDGET_WIDTH) / 2),
+            y: 112,
+        });
+    }
+
+    function applyWidgetPosition(widget, position, persist = true) {
+        if (!widget) return;
+        const next = clampWidgetPosition(position);
+        widget.style.left = `${next.x}px`;
+        widget.style.top = `${next.y}px`;
+        if (persist) writeWidgetPosition(next);
+    }
+
+    function restoreWidgetPosition(widget) {
+        applyWidgetPosition(widget, readWidgetPosition() || getDefaultWidgetPosition(), false);
     }
 
     function getPanelApi(panelId) {
@@ -155,20 +200,7 @@
         const fileTreeButton = tabsWrapper?.querySelector(NATIVE_FILE_TREE_TAB_SELECTOR) || null;
         const templateButton = fileTreeButton || getNativeTabs(tabsWrapper)[0] || null;
         const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
-        const railContent = tabContent?.closest('.ide-rail-content') || null;
-        const sidebarToggleButton = document.querySelector(SIDEBAR_TOGGLE_BUTTON_SELECTOR);
-        return { tabsWrapper, fileTreeButton, templateButton, tabContent, railContent, sidebarToggleButton };
-    }
-
-    function ensurePanelContainer(railContent) {
-        if (!railContent) return null;
-        let container = railContent.querySelector(`#${CONTAINER_ID}`);
-        if (!container) {
-            container = document.createElement('div');
-            container.id = CONTAINER_ID;
-            railContent.appendChild(container);
-        }
-        return container;
+        return { tabsWrapper, fileTreeButton, templateButton, tabContent };
     }
 
     function ensureStyle() {
@@ -176,36 +208,16 @@
         const style = document.createElement('style');
         style.id = STYLE_ID;
         style.textContent = `
-            /* ---- custom panel container ---- */
-            #${CONTAINER_ID} {
-                display: none;
-                flex-direction: column;
-                height: 100%;
-                min-height: 0;
-            }
-            .ide-rail-content[${MODE_ATTR}="custom"] > .ide-rail-tab-content {
-                display: none !important;
-            }
-            .ide-rail-content[${MODE_ATTR}="custom"] > #${CONTAINER_ID} {
-                display: flex !important;
-            }
-
-            /* ---- native tab de-emphasis when custom panel active ---- */
-            .ide-rail-tabs-wrapper[${ACTIVE_TAB_ATTR}] > .nav-link.active:not([${TAB_ATTR}]),
-            .ide-rail-tabs-wrapper[${ACTIVE_TAB_ATTR}] > .nav-link.open-rail:not([${TAB_ATTR}]) {
-                background-color: transparent !important;
-                box-shadow: none !important;
-            }
-
-            /* ---- tab button icons ---- */
             [${TAB_ATTR}] {
                 position: relative;
                 display: inline-flex !important;
                 align-items: center !important;
                 justify-content: center !important;
+                align-self: center !important;
+                margin-inline: auto;
                 padding: 0 !important;
                 box-sizing: border-box;
-                transition: background-color 0.15s ease, box-shadow 0.15s ease;
+                transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
             }
             [${TAB_ATTR}] .ide-rail-tab-link-icon {
                 display: inline-flex;
@@ -224,47 +236,55 @@
                 pointer-events: none;
             }
 
-            /* ---- panel root ---- */
-            [${PANEL_ATTR}] {
+            #${WIDGET_ID} {
+                position: fixed;
+                z-index: 999999;
                 display: none;
                 flex-direction: column;
-                height: 100%;
-                min-height: 0;
+                width: min(${WIDGET_WIDTH}px, calc(100vw - ${WIDGET_PADDING * 2}px));
+                max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
+                max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
+                min-height: 200px;
+                overflow: hidden;
+                border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
+                border-radius: 14px;
                 background: var(--ol-sidebar-bg, #fff);
                 color: var(--ol-sidebar-fg, #1b2733);
+                box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
+                backdrop-filter: blur(12px);
             }
-            [${PANEL_ATTR}].is-open {
+            #${WIDGET_ID}.is-open {
                 display: flex;
             }
-
-            /* ---- panel header ---- */
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-header {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-header {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 gap: 10px;
                 padding: 14px 16px;
                 border-bottom: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
+                cursor: grab;
+                user-select: none;
+                touch-action: none;
             }
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-heading {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-heading {
                 min-width: 0;
+                flex: 0 1 auto;
             }
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-title {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-title {
                 margin: 0;
                 font-size: 0.9375rem;
                 font-weight: 700;
                 line-height: 1.35;
                 color: inherit;
             }
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-subtitle {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-subtitle {
                 margin: 3px 0 0;
                 font-size: 0.75rem;
                 line-height: 1.45;
                 color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
             }
-
-            /* ---- close button ---- */
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-close {
                 flex-shrink: 0;
                 width: 28px;
                 height: 28px;
@@ -280,16 +300,14 @@
                 justify-content: center;
                 transition: background-color 0.12s ease;
             }
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close:hover {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-close:hover {
                 background: var(--ol-sidebar-hover, rgba(125, 125, 125, 0.1));
             }
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-close:focus-visible {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-close:focus-visible {
                 outline: 2px solid var(--ol-sidebar-focus, #1a73e8);
                 outline-offset: 1px;
             }
-
-            /* ---- panel body ---- */
-            [${PANEL_ATTR}] .experimental-overleaf-native-sidebar-body {
+            #${WIDGET_ID} .experimental-overleaf-native-sidebar-body {
                 flex: 1 1 auto;
                 min-height: 0;
                 overflow: auto;
@@ -299,9 +317,7 @@
                 gap: 10px;
                 box-sizing: border-box;
             }
-
-            /* ---- footer ---- */
-            .${FOOTER_CLASS} {
+            #${WIDGET_ID} .${FOOTER_CLASS} {
                 padding: 10px 16px 14px;
                 border-top: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
                 font-size: 0.6875rem;
@@ -309,27 +325,21 @@
                 color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
                 min-height: 14px;
             }
-
-            /* ---- cards ---- */
-            [${PANEL_ATTR}] .ol-native-sidebar-card {
+            #${WIDGET_ID} .ol-native-sidebar-card {
                 border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
                 border-radius: 6px;
                 padding: 10px 12px;
                 background: var(--ol-sidebar-card-bg, rgba(255, 255, 255, 0.5));
                 box-sizing: border-box;
             }
-
-            /* ---- muted text ---- */
-            [${PANEL_ATTR}] .ol-native-sidebar-muted {
+            #${WIDGET_ID} .ol-native-sidebar-muted {
                 margin: 0;
                 font-size: 0.8125rem;
                 line-height: 1.5;
                 color: var(--ol-sidebar-muted, rgba(90, 100, 110, 0.88));
             }
-
-            /* ---- form controls ---- */
-            [${PANEL_ATTR}] .ol-native-sidebar-input,
-            [${PANEL_ATTR}] .ol-native-sidebar-textarea {
+            #${WIDGET_ID} .ol-native-sidebar-input,
+            #${WIDGET_ID} .ol-native-sidebar-textarea {
                 width: 100%;
                 box-sizing: border-box;
                 border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.22));
@@ -341,22 +351,20 @@
                 font-size: 0.8125rem;
                 transition: border-color 0.12s ease;
             }
-            [${PANEL_ATTR}] .ol-native-sidebar-input:focus,
-            [${PANEL_ATTR}] .ol-native-sidebar-textarea:focus {
+            #${WIDGET_ID} .ol-native-sidebar-input:focus,
+            #${WIDGET_ID} .ol-native-sidebar-textarea:focus {
                 border-color: var(--ol-sidebar-focus, #1a73e8);
                 outline: none;
             }
-            [${PANEL_ATTR}] .ol-native-sidebar-textarea {
+            #${WIDGET_ID} .ol-native-sidebar-textarea {
                 min-height: 200px;
                 resize: vertical;
                 font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
                 font-size: 0.75rem;
                 line-height: 1.55;
             }
-
-            /* ---- buttons ---- */
-            [${PANEL_ATTR}] .ol-native-sidebar-button,
-            [${PANEL_ATTR}] .ol-native-sidebar-link-button {
+            #${WIDGET_ID} .ol-native-sidebar-button,
+            #${WIDGET_ID} .ol-native-sidebar-link-button {
                 border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.22));
                 border-radius: 6px;
                 padding: 6px 10px;
@@ -374,18 +382,16 @@
                 box-sizing: border-box;
                 transition: background-color 0.12s ease;
             }
-            [${PANEL_ATTR}] .ol-native-sidebar-button:hover,
-            [${PANEL_ATTR}] .ol-native-sidebar-link-button:hover {
+            #${WIDGET_ID} .ol-native-sidebar-button:hover,
+            #${WIDGET_ID} .ol-native-sidebar-link-button:hover {
                 background: var(--ol-sidebar-hover, rgba(125, 125, 125, 0.1));
             }
-            [${PANEL_ATTR}] .ol-native-sidebar-button:focus-visible,
-            [${PANEL_ATTR}] .ol-native-sidebar-link-button:focus-visible {
+            #${WIDGET_ID} .ol-native-sidebar-button:focus-visible,
+            #${WIDGET_ID} .ol-native-sidebar-link-button:focus-visible {
                 outline: 2px solid var(--ol-sidebar-focus, #1a73e8);
                 outline-offset: 1px;
             }
-
-            /* ---- lists ---- */
-            [${PANEL_ATTR}] .ol-native-sidebar-list {
+            #${WIDGET_ID} .ol-native-sidebar-list {
                 list-style: none;
                 padding: 0;
                 margin: 0;
@@ -393,10 +399,8 @@
                 flex-direction: column;
                 gap: 8px;
             }
-
-            /* ---- dark mode adjustments ---- */
-            .overall-theme-dark [${PANEL_ATTR}],
-            [data-theme="dark"] [${PANEL_ATTR}] {
+            .overall-theme-dark #${WIDGET_ID},
+            [data-theme="dark"] #${WIDGET_ID} {
                 --ol-sidebar-bg: #1b2733;
                 --ol-sidebar-fg: #d9e0e8;
                 --ol-sidebar-border: rgba(200, 210, 220, 0.12);
@@ -423,27 +427,10 @@
         button.replaceChildren(iconSlot);
     }
 
-    // FIX 1: Do not clone the native button's className wholesale.
-    // The native classes (nav-link, etc.) carry Overleaf's own padding and
-    // display rules that fight the centering CSS on [TAB_ATTR]. Instead,
-    // only carry over the structural/sizing classes that control button
-    // dimensions (e.g. "nav-link"), and let our own [TAB_ATTR] rule
-    // override display/alignment with !important.
     function createCustomTabButton(panel, templateButton) {
         const button = document.createElement('button');
-
-        // Copy only the classes that govern button size/shape, not layout overrides.
-        // We keep nav-link (if present) so the button matches native dimensions,
-        // but we deliberately skip any class that sets padding or display directly
-        // since [TAB_ATTR] CSS handles those with higher specificity via !important.
-        const nativeClasses = [...templateButton.classList].filter(cls =>
-            // Keep structural shape classes, drop anything that sets its own
-            // flex/inline-block layout that would compete with our centering.
-            !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center',
-              'text-center', 'p-0', 'px-0', 'py-0'].includes(cls)
-        );
+        const nativeClasses = [...templateButton.classList].filter(cls => !EXCLUDED_BUTTON_CLASSES.includes(cls));
         button.className = nativeClasses.join(' ');
-
         button.setAttribute(TAB_ATTR, panel.id);
         button.dataset.panelId = panel.id;
         button.dataset.rrUiEventKey = panel.id;
@@ -451,7 +438,6 @@
         button.setAttribute('type', 'button');
         button.setAttribute('role', 'tab');
         button.id = `experimental-overleaf-native-sidebar-tab-${panel.id}`;
-        button.setAttribute('aria-controls', `experimental-overleaf-native-sidebar-pane-${panel.id}`);
         button.setAttribute('aria-selected', 'false');
         button.setAttribute('tabindex', '-1');
         button.classList.remove('active', 'open-rail');
@@ -470,6 +456,13 @@
             }
         }, true);
         return button;
+    }
+
+    function parseLuminance(colorString) {
+        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (!match) return 0.5;
+        const [r, g, b] = [+match[1], +match[2], +match[3]];
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     }
 
     function detectThemeColors(context) {
@@ -492,26 +485,19 @@
         };
     }
 
-    function parseLuminance(colorString) {
-        const m = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-        if (!m) return 0.5;
-        const [r, g, b] = [+m[1], +m[2], +m[3]];
-        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    }
-
-    function applyTheme(context, panelContainer, customButtons) {
+    function applyTheme(context, floatingWidget, customButtons) {
         const colors = detectThemeColors(context);
-        const root = panelContainer;
-        if (!root) return;
-        root.style.setProperty('--ol-sidebar-bg', colors.bg);
-        root.style.setProperty('--ol-sidebar-fg', colors.fg);
-        root.style.setProperty('--ol-sidebar-border', colors.border);
-        root.style.setProperty('--ol-sidebar-muted', colors.muted);
-        root.style.setProperty('--ol-sidebar-hover', colors.hover);
-        root.style.setProperty('--ol-sidebar-button-bg', colors.buttonBg);
-        root.style.setProperty('--ol-sidebar-input-bg', colors.inputBg);
-        root.style.setProperty('--ol-sidebar-card-bg', colors.cardBg);
-        root.style.setProperty('--ol-sidebar-focus', colors.focus);
+        if (floatingWidget) {
+            floatingWidget.style.setProperty('--ol-sidebar-bg', colors.bg);
+            floatingWidget.style.setProperty('--ol-sidebar-fg', colors.fg);
+            floatingWidget.style.setProperty('--ol-sidebar-border', colors.border);
+            floatingWidget.style.setProperty('--ol-sidebar-muted', colors.muted);
+            floatingWidget.style.setProperty('--ol-sidebar-hover', colors.hover);
+            floatingWidget.style.setProperty('--ol-sidebar-button-bg', colors.buttonBg);
+            floatingWidget.style.setProperty('--ol-sidebar-input-bg', colors.inputBg);
+            floatingWidget.style.setProperty('--ol-sidebar-card-bg', colors.cardBg);
+            floatingWidget.style.setProperty('--ol-sidebar-focus', colors.focus);
+        }
 
         const fileTreeButton = context.fileTreeButton;
         const buttonStyles = fileTreeButton ? getComputedStyle(fileTreeButton) : null;
@@ -531,217 +517,170 @@
         });
     }
 
-    function bindNativeTabHandlers(context) {
-        getNativeTabs(context.tabsWrapper).forEach(button => {
-            if (button.dataset.experimentalOverleafNativeSidebarBound === '1') return;
-            button.dataset.experimentalOverleafNativeSidebarBound = '1';
-            button.addEventListener('click', () => {
-                if (state.isOpen) {
-                    state.isOpen = false;
-                    persistState();
-                    scheduleSync(0);
-                }
+    function ensureFloatingWidget() {
+        let widget = document.getElementById(WIDGET_ID);
+        if (widget) return widget;
+
+        widget = document.createElement('section');
+        widget.id = WIDGET_ID;
+        widget.setAttribute('role', 'dialog');
+        widget.setAttribute('aria-modal', 'false');
+
+        const header = document.createElement('div');
+        header.className = 'experimental-overleaf-native-sidebar-header';
+        const heading = document.createElement('div');
+        heading.className = 'experimental-overleaf-native-sidebar-heading';
+        const title = document.createElement('h2');
+        title.className = 'experimental-overleaf-native-sidebar-title';
+        const subtitle = document.createElement('p');
+        subtitle.className = 'experimental-overleaf-native-sidebar-subtitle';
+        heading.append(title, subtitle);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'experimental-overleaf-native-sidebar-close';
+        close.setAttribute('aria-label', 'Close floating sidebar panel');
+        close.textContent = '×';
+        close.addEventListener('click', () => closePanel());
+
+        header.append(heading, close);
+
+        const body = document.createElement('div');
+        body.className = 'experimental-overleaf-native-sidebar-body';
+        const footer = document.createElement('div');
+        footer.className = FOOTER_CLASS;
+        widget.append(header, body, footer);
+        document.body.appendChild(widget);
+        restoreWidgetPosition(widget);
+        makeDraggable(widget, header);
+        return widget;
+    }
+
+    function makeDraggable(widget, handle) {
+        let pointerId = null;
+        let originX = 0;
+        let originY = 0;
+        let startX = 0;
+        let startY = 0;
+
+        handle.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            if (event.target instanceof Element && event.target.closest(DRAG_IGNORE_SELECTOR)) return;
+            pointerId = event.pointerId;
+            handle.setPointerCapture(pointerId);
+            const rect = widget.getBoundingClientRect();
+            originX = rect.left;
+            originY = rect.top;
+            startX = event.clientX;
+            startY = event.clientY;
+            handle.style.cursor = 'grabbing';
+            event.preventDefault();
+        });
+
+        handle.addEventListener('pointermove', event => {
+            if (event.pointerId !== pointerId) return;
+            applyWidgetPosition(widget, {
+                x: originX + event.clientX - startX,
+                y: originY + event.clientY - startY,
             });
         });
+
+        const release = event => {
+            if (event.pointerId !== pointerId) return;
+            pointerId = null;
+            handle.style.cursor = 'grab';
+        };
+
+        handle.addEventListener('pointerup', release);
+        handle.addEventListener('pointercancel', release);
     }
 
-    function ensureCustomPanel(panelContainer, panel) {
-        if (!panelContainer) return null;
-        let panelRoot = panelContainer.querySelector(`[${TAB_ATTR}="${panel.id}"][${PANEL_ATTR}]`);
-        if (!panelRoot) {
-            panelRoot = document.createElement('div');
-            panelRoot.setAttribute(PANEL_ATTR, 'true');
-            panelRoot.setAttribute(TAB_ATTR, panel.id);
-            panelRoot.setAttribute('role', 'tabpanel');
-            panelRoot.id = `experimental-overleaf-native-sidebar-pane-${panel.id}`;
-            panelRoot.setAttribute('aria-labelledby', `experimental-overleaf-native-sidebar-tab-${panel.id}`);
-
-            const header = document.createElement('div');
-            header.className = 'experimental-overleaf-native-sidebar-header';
-            const heading = document.createElement('div');
-            heading.className = 'experimental-overleaf-native-sidebar-heading';
-            const title = document.createElement('h2');
-            title.className = 'experimental-overleaf-native-sidebar-title';
-            const subtitle = document.createElement('p');
-            subtitle.className = 'experimental-overleaf-native-sidebar-subtitle';
-            heading.append(title, subtitle);
-
-            const close = document.createElement('button');
-            close.type = 'button';
-            close.className = 'experimental-overleaf-native-sidebar-close';
-            close.setAttribute('aria-label', 'Close custom sidebar panel');
-            close.textContent = '×';
-            close.addEventListener('click', () => closePanel());
-
-            header.append(heading, close);
-
-            const body = document.createElement('div');
-            body.className = 'experimental-overleaf-native-sidebar-body';
-            const footer = document.createElement('div');
-            footer.className = FOOTER_CLASS;
-            panelRoot.append(header, body, footer);
-            panelContainer.appendChild(panelRoot);
-        }
-        return panelRoot;
+    function getWidgetPanel(widget) {
+        return widget?.dataset.panelId ? state.panels.get(widget.dataset.panelId) : null;
     }
 
-    function renderPanelContent(panelContainer, panelDefinition) {
-        const panelRoot = ensureCustomPanel(panelContainer, panelDefinition);
-        if (!panelRoot) return;
+    function renderPanelContent(widget, panelDefinition) {
+        if (!widget || !panelDefinition) return;
+        const title = widget.querySelector('.experimental-overleaf-native-sidebar-title');
+        const subtitle = widget.querySelector('.experimental-overleaf-native-sidebar-subtitle');
+        const body = widget.querySelector('.experimental-overleaf-native-sidebar-body');
+        const footer = widget.querySelector(`.${FOOTER_CLASS}`);
+        if (!body) return;
 
-        const title = panelRoot.querySelector('.experimental-overleaf-native-sidebar-title');
-        const subtitle = panelRoot.querySelector('.experimental-overleaf-native-sidebar-subtitle');
-        const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
-        const footer = panelRoot.querySelector(`.${FOOTER_CLASS}`);
+        widget.dataset.panelId = panelDefinition.id;
+        widget.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectIdOrEmpty();
+        widget.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
+        widget.setAttribute('aria-labelledby', `experimental-overleaf-native-sidebar-tab-${panelDefinition.id}`);
+
         if (title) title.textContent = panelDefinition.title;
         if (subtitle) subtitle.textContent = panelDefinition.subtitle || '';
-        if (body) body.textContent = '';
+        body.textContent = '';
         state.footerText = '';
         panelDefinition.render(body, getPanelApi(panelDefinition.id));
         if (footer) footer.textContent = state.footerText;
-        panelRoot.dataset.experimentalOverleafSidebarProjectId = getCurrentProjectIdOrEmpty();
-        panelRoot.dataset.experimentalOverleafSidebarRenderVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
     }
 
-    function shouldRenderPanel(panelRoot, panelDefinition) {
-        if (!panelRoot) return true;
-        if (panelRoot.dataset.experimentalOverleafSidebarProjectId !== getCurrentProjectIdOrEmpty()) return true;
-        const expected = String(state.renderVersions.get(panelDefinition.id) || 0);
-        if (panelRoot.dataset.experimentalOverleafSidebarRenderVersion !== expected) return true;
-        const body = panelRoot.querySelector('.experimental-overleaf-native-sidebar-body');
+    function shouldRenderPanel(widget, panelDefinition) {
+        if (!widget || !panelDefinition) return false;
+        if (widget.dataset.panelId !== panelDefinition.id) return true;
+        if (widget.dataset.experimentalOverleafSidebarProjectId !== getCurrentProjectIdOrEmpty()) return true;
+        const expectedVersion = String(state.renderVersions.get(panelDefinition.id) || 0);
+        if (widget.dataset.experimentalOverleafSidebarRenderVersion !== expectedVersion) return true;
+        const body = widget.querySelector('.experimental-overleaf-native-sidebar-body');
         return !body || !body.hasChildNodes();
     }
 
-    // FIX 2: isSidebarClosed previously tested for a visible native tabContent,
-    // but when a custom panel is active the native tabContent is hidden via
-    // display:none !important — so the function always returned true while our
-    // panel was open, causing ensureSidebarOpen to keep clicking the file-tree
-    // button and destroying the custom panel's mode on every sync.
-    //
-    // The fix: if our own panel container is visible in the DOM, the rail is
-    // clearly open and we should not attempt to re-open it.
-    function isSidebarClosed(context) {
-        // If our custom container is already visible, the sidebar is open.
-        const panelContainer = document.getElementById(CONTAINER_ID);
-        if (panelContainer && isVisible(panelContainer)) return false;
-
-        const toggle = context.sidebarToggleButton;
-        if (!toggle) return !context.tabContent;
-        if (toggle.classList.contains('custom-toggler-closed')) return true;
-        if (toggle.classList.contains('custom-toggler-open')) return false;
-        if (toggle.getAttribute('aria-expanded') === 'false') return true;
-        const label = toggle.getAttribute('aria-label') || '';
-        if (/show the panel/i.test(label)) return true;
-
-        // Fall back to checking whether the native tab content is in the DOM.
-        // Note: when a custom panel is active, tabContent is hidden but still
-        // connected, so we check isConnected rather than isVisible here.
-        return !context.tabContent?.isConnected;
-    }
-
-    async function ensureSidebarOpen() {
-        let context = resolveContext();
-        if (!state.isOpen || !state.activeId) return context;
-        if (!isSidebarClosed(context)) return context;
-
-        if (context.sidebarToggleButton && isVisible(context.sidebarToggleButton)) {
-            context.sidebarToggleButton.click();
-            await wait(SIDEBAR_OPEN_DELAY_MS);
-            context = resolveContext();
-        }
-        if (!isSidebarClosed(context)) return context;
-
-        if (context.fileTreeButton && isVisible(context.fileTreeButton)) {
-            context.fileTreeButton.click();
-            await wait(SIDEBAR_OPEN_DELAY_MS);
-            context = resolveContext();
-        }
-        if (!isSidebarClosed(context)) return context;
-
-        const activeNativeTab = getActiveNativeTab(context.tabsWrapper);
-        if (activeNativeTab && isVisible(activeNativeTab)) {
-            activeNativeTab.click();
-            await wait(SIDEBAR_OPEN_DELAY_MS);
-            context = resolveContext();
-        }
-        return context;
-    }
-
     function syncTabs(context) {
-        const template = context.templateButton;
-        if (!context.tabsWrapper || !template) return [];
-        const buttons = [];
-        [...state.panels.values()]
-            .sort((a, b) => (a.order || 0) - (b.order || 0))
-            .forEach(panel => {
-                let button = context.tabsWrapper.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
-                if (!button) {
-                    button = createCustomTabButton(panel, template);
-                    context.tabsWrapper.appendChild(button);
-                }
-                buttons.push(button);
-            });
-        return buttons;
-    }
-
-    function syncPanels(panelContainer) {
-        if (!panelContainer) return [];
+        if (!context.tabsWrapper || !context.templateButton) return [];
         return [...state.panels.values()]
             .sort((a, b) => (a.order || 0) - (b.order || 0))
-            .map(panel => ensureCustomPanel(panelContainer, panel))
-            .filter(Boolean);
+            .map(panel => {
+                let button = context.tabsWrapper.querySelector(`[${TAB_ATTR}="${panel.id}"]`);
+                if (!button) {
+                    button = createCustomTabButton(panel, context.templateButton);
+                    context.tabsWrapper.appendChild(button);
+                }
+                return button;
+            });
     }
 
-    function updateSelectionState(context, customButtons, customPanels) {
-        if (state.isOpen && state.activeId) {
-            if (context.railContent) context.railContent.setAttribute(MODE_ATTR, 'custom');
-            if (context.tabsWrapper) context.tabsWrapper.setAttribute(ACTIVE_TAB_ATTR, state.activeId);
-            customButtons.forEach(button => {
-                const isActive = button.dataset.panelId === state.activeId;
-                button.classList.toggle('active', isActive);
-                button.classList.toggle('open-rail', isActive);
-                button.setAttribute('aria-selected', isActive ? 'true' : 'false');
-                button.setAttribute('tabindex', isActive ? '0' : '-1');
-            });
-            customPanels.forEach(panel => {
-                panel.classList.toggle('is-open', panel.getAttribute(TAB_ATTR) === state.activeId);
-            });
-            return;
-        }
-        if (context.railContent) context.railContent.removeAttribute(MODE_ATTR);
-        if (context.tabsWrapper) context.tabsWrapper.removeAttribute(ACTIVE_TAB_ATTR);
+    function updateSelectionState(customButtons, widget) {
         customButtons.forEach(button => {
-            button.classList.remove('active', 'open-rail');
-            button.setAttribute('aria-selected', 'false');
-            button.setAttribute('tabindex', '-1');
+            const isActive = state.isOpen && button.dataset.panelId === state.activeId;
+            button.classList.toggle('active', isActive);
+            button.classList.toggle('open-rail', isActive);
+            button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            button.setAttribute('tabindex', isActive ? '0' : '-1');
         });
-        customPanels.forEach(panel => {
-            panel.classList.remove('is-open');
-        });
+        if (!widget) return;
+        widget.classList.toggle('is-open', Boolean(state.isOpen && state.activeId));
+        widget.hidden = !(state.isOpen && state.activeId);
     }
 
     async function sync() {
-        const context = await ensureSidebarOpen();
-        if (!context.tabsWrapper || !context.tabContent || !context.railContent) return;
-
-        bindNativeTabHandlers(context);
-        const panelContainer = ensurePanelContainer(context.railContent);
-        if (!panelContainer) return;
-
-        const buttons = syncTabs(context);
-        const panels = syncPanels(panelContainer);
-
-        const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
-        if (activePanel) {
-            const activePanelElement = panels.find(p => p.getAttribute(TAB_ATTR) === state.activeId)
-                || ensureCustomPanel(panelContainer, activePanel);
-            if (shouldRenderPanel(activePanelElement, activePanel)) {
-                renderPanelContent(panelContainer, activePanel);
-            }
+        if (!document.body) {
+            await wait(100);
+            scheduleSync(0);
+            return;
         }
 
-        updateSelectionState(context, buttons, panels);
-        applyTheme(context, panelContainer, buttons);
+        if (state.activeId && !state.panels.has(state.activeId)) {
+            state.activeId = [...state.panels.keys()][0] || null;
+            if (!state.activeId) state.isOpen = false;
+            persistState();
+        }
+
+        const context = resolveContext();
+        const buttons = syncTabs(context);
+        const widget = ensureFloatingWidget();
+        const activePanel = state.isOpen && state.activeId ? state.panels.get(state.activeId) : null;
+
+        if (activePanel && shouldRenderPanel(widget, activePanel)) {
+            renderPanelContent(widget, activePanel);
+        }
+
+        updateSelectionState(buttons, widget);
+        applyTheme(context, widget, buttons);
     }
 
     function scheduleSync(delay = 0) {
@@ -799,6 +738,13 @@
         global.addEventListener('popstate', () => scheduleSync(0));
         global.addEventListener('hashchange', () => scheduleSync(0));
         global.addEventListener('focus', () => scheduleSync(0));
+        global.addEventListener('resize', () => {
+            global.clearTimeout(state.resizeTimer);
+            state.resizeTimer = global.setTimeout(() => {
+                const widget = document.getElementById(WIDGET_ID);
+                if (widget) restoreWidgetPosition(widget);
+            }, DOM_SYNC_DEBOUNCE_MS);
+        });
     }
 
     ensureStyle();
