@@ -27,10 +27,18 @@
         minWidth: 380,
         minHeight: 420,
         defaultData: {
+            uiMode: 'guided',
             mode: 'command',
+            action: 'new',
             declaration: '\\NewDocumentCommand',
             name: '\\mycommand',
             argSpec: 'm',
+            requiredArgs: 1,
+            hasOptionalArg: false,
+            optionalDefault: '',
+            commandPurpose: 'Describe what the command should do in plain language.',
+            environmentStartDescription: 'Describe what should happen when the environment starts.',
+            environmentEndDescription: 'Describe what should happen when the environment ends.',
             commandBody: '% #1',
             environmentBody: '% begin code',
             environmentAfter: '% end code',
@@ -106,8 +114,12 @@
         return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
     }
 
+    function getProjectStorageScope() {
+        return getProjectId() || `fallback-page:${window.location.pathname}${window.location.search}`;
+    }
+
     function getStorageKey(kind) {
-        return `overleaf-floating-widget:${CONFIG.slug}:${getProjectId() || 'unknown-project'}:${kind}`;
+        return `overleaf-floating-widget:${CONFIG.slug}:${getProjectStorageScope()}:${kind}`;
     }
 
     function cloneDefaultData() {
@@ -385,6 +397,16 @@
                 flex-direction: column;
                 gap: 8px;
             }
+            #${WIDGET_ID} .oncb-help {
+                margin: 0;
+                font-size: 0.75rem;
+                line-height: 1.55;
+                color: var(--oncb-muted, #aab6c8);
+            }
+            #${WIDGET_ID} .oncb-help code {
+                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                font-size: 0.72rem;
+            }
         `;
         document.head.appendChild(style);
     }
@@ -599,6 +621,156 @@
         return mode === 'environment' ? ENVIRONMENT_DECLARATIONS : COMMAND_DECLARATIONS;
     }
 
+    function getActionOptions(mode) {
+        return mode === 'environment'
+            ? [
+                { value: 'new', label: 'Create a new environment', declaration: '\\NewDocumentEnvironment', help: 'Use this when the environment name is brand new. It errors if that environment already exists.' },
+                { value: 'renew', label: 'Replace an existing environment', declaration: '\\RenewDocumentEnvironment', help: 'Use this when the environment already exists and you want to redefine it.' },
+                { value: 'provide', label: 'Create it only if missing', declaration: '\\ProvideDocumentEnvironment', help: 'Use this when you want a fallback that will not overwrite an existing environment.' },
+                { value: 'declare', label: 'Advanced declaration form', declaration: '\\DeclareDocumentEnvironment', help: 'This is the low-level xparse-style declaration form. Choose it if you specifically want the declare variant.' },
+            ]
+            : [
+                { value: 'new', label: 'Create a new command', declaration: '\\NewDocumentCommand', help: 'Use this when the command name is brand new. It errors if that command already exists.' },
+                { value: 'renew', label: 'Replace an existing command', declaration: '\\RenewDocumentCommand', help: 'Use this when the command already exists and you want to redefine it.' },
+                { value: 'provide', label: 'Create it only if missing', declaration: '\\ProvideDocumentCommand', help: 'Use this when you want a fallback that will not overwrite an existing command.' },
+                { value: 'declare', label: 'Advanced declaration form', declaration: '\\DeclareDocumentCommand', help: 'This is the low-level xparse-style declaration form. Choose it if you specifically want the declare variant.' },
+            ];
+    }
+
+    function normalizeUiMode(value) {
+        return value === 'expert' ? 'expert' : 'guided';
+    }
+
+    function normalizeAction(mode, value) {
+        const options = getActionOptions(mode);
+        return options.some(option => option.value === value) ? value : options[0].value;
+    }
+
+    function getActionDetails(mode, action) {
+        return getActionOptions(mode).find(option => option.value === action) || getActionOptions(mode)[0];
+    }
+
+    function normalizeRequiredArgs(value) {
+        const numeric = Number.parseInt(String(value ?? ''), 10);
+        if (Number.isNaN(numeric)) return 1;
+        return Math.min(Math.max(numeric, 0), 4);
+    }
+
+    function commentize(text, fallback) {
+        const lines = String(text || '')
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        const source = lines.length ? lines : [fallback];
+        return source.map(line => `% ${line}`);
+    }
+
+    function buildGuidedArgSpec(data) {
+        const parts = [];
+        if (data.hasOptionalArg) {
+            const defaultValue = String(data.optionalDefault || '').trim();
+            parts.push(defaultValue ? `O{${defaultValue}}` : 'o');
+        }
+        for (let index = 0; index < normalizeRequiredArgs(data.requiredArgs); index += 1) {
+            parts.push('m');
+        }
+        return parts.join(' ');
+    }
+
+    function buildGuidedParameterNotes(data) {
+        const notes = [];
+        let parameterIndex = 1;
+        if (data.hasOptionalArg) {
+            const defaultValue = String(data.optionalDefault || '').trim();
+            notes.push(defaultValue
+                ? `% #${parameterIndex} = optional input (defaults to "${defaultValue}")`
+                : `% #${parameterIndex} = optional input`);
+            parameterIndex += 1;
+        }
+        const requiredArgs = normalizeRequiredArgs(data.requiredArgs);
+        for (let index = 0; index < requiredArgs; index += 1) {
+            notes.push(`% #${parameterIndex} = required input ${index + 1}`);
+            parameterIndex += 1;
+        }
+        if (!notes.length) {
+            notes.push('% This definition takes no user inputs.');
+        }
+        return notes;
+    }
+
+    function buildGuidedUsageExample(data) {
+        const optionalPart = data.hasOptionalArg
+            ? `[${String(data.optionalDefault || '').trim() || 'optional'}]`
+            : '';
+        const requiredPart = Array.from({ length: normalizeRequiredArgs(data.requiredArgs) }, (_, index) => `{value${index + 1}}`).join('');
+        if (data.mode === 'environment') {
+            const envName = normalizeName(data.name, 'environment');
+            return `\\begin{${envName}}${optionalPart}${requiredPart}\n    % environment content\n\\end{${envName}}`;
+        }
+        return `${normalizeName(data.name, 'command')}${optionalPart}${requiredPart}`;
+    }
+
+    function buildGuidedCommandBody(data) {
+        return [
+            ...commentize(data.commandPurpose, 'Goal: describe what the command should do.'),
+            ...buildGuidedParameterNotes(data),
+            '% Replace the comment block below with the LaTeX code you want to run.',
+            '% TODO: write the command body here',
+        ].join('\n');
+    }
+
+    function buildGuidedEnvironmentBody(data) {
+        return [
+            ...commentize(data.environmentStartDescription, 'Start behavior: describe what should happen when the environment begins.'),
+            ...buildGuidedParameterNotes(data),
+            '% Replace the comment block below with the LaTeX code that should run at \\begin.',
+            '% TODO: write the begin code here',
+        ].join('\n');
+    }
+
+    function buildGuidedEnvironmentAfter(data) {
+        return [
+            ...commentize(data.environmentEndDescription, 'End behavior: describe what should happen when the environment ends.'),
+            '% Replace the comment block below with the LaTeX code that should run at \\end.',
+            '% TODO: write the end code here',
+        ].join('\n');
+    }
+
+    function syncGuidedFields(data) {
+        const actionDetails = getActionDetails(data.mode, data.action);
+        data.declaration = actionDetails.declaration;
+        data.argSpec = buildGuidedArgSpec(data);
+        if (data.mode === 'environment') {
+            data.environmentBody = buildGuidedEnvironmentBody(data);
+            data.environmentAfter = buildGuidedEnvironmentAfter(data);
+        } else {
+            data.commandBody = buildGuidedCommandBody(data);
+        }
+    }
+
+    function normalizeFormState(data) {
+        const merged = {
+            ...cloneDefaultData(),
+            ...data,
+        };
+        merged.uiMode = normalizeUiMode(merged.uiMode);
+        merged.mode = merged.mode === 'environment' ? 'environment' : 'command';
+        merged.action = normalizeAction(merged.mode, merged.action);
+        merged.requiredArgs = normalizeRequiredArgs(merged.requiredArgs);
+        merged.hasOptionalArg = Boolean(merged.hasOptionalArg);
+        merged.optionalDefault = String(merged.optionalDefault || '');
+        merged.commandPurpose = String(merged.commandPurpose || '');
+        merged.environmentStartDescription = String(merged.environmentStartDescription || '');
+        merged.environmentEndDescription = String(merged.environmentEndDescription || '');
+        merged.declaration = String(merged.declaration || getDeclarationOptions(merged.mode)[0]);
+        merged.name = String(merged.name || (merged.mode === 'environment' ? 'myenvironment' : '\\mycommand'));
+        merged.argSpec = String(merged.argSpec ?? '');
+        merged.commandBody = String(merged.commandBody || '% #1');
+        merged.environmentBody = String(merged.environmentBody || '% begin code');
+        merged.environmentAfter = String(merged.environmentAfter || '% end code');
+        return merged;
+    }
+
     function getSuggestedBody(mode, data) {
         if (mode === 'environment') return data.environmentBody || '% begin code';
         return data.commandBody || '% #1';
@@ -625,9 +797,24 @@
         const normalized = normalizeName(data.name, mode);
         const bareName = mode === 'environment' ? normalized : normalized.replace(/^\\/, '');
         const spec = String(data.argSpec || '').trim();
+        if (data.uiMode === 'guided') {
+            const actionDetails = getActionDetails(mode, data.action);
+            const notes = [
+                `Project: ${getProjectName()}`,
+                `Builder mode: Guided`,
+                `Declaration: ${actionDetails.declaration}`,
+                `Why this variant: ${actionDetails.help}`,
+                spec ? `Argument spec: ${spec}` : 'Argument spec: (none)',
+                `Example call:\n${buildGuidedUsageExample(data)}`,
+                'Paste the generated declaration in your project preamble or in a .sty file that the project loads.',
+            ];
+            return notes.join('\n\n');
+        }
         const notes = [
             `Project: ${getProjectName()}`,
+            `Builder mode: Expert`,
             mode === 'environment' ? `Environment name: ${bareName}` : `Command name: ${normalized}`,
+            `Declaration: ${data.declaration}`,
             spec ? `Argument spec: ${spec}` : 'Argument spec: (none)',
             mode === 'environment'
                 ? `Usage:\n\\begin{${bareName}} ... \\end{${bareName}}`
@@ -643,65 +830,131 @@
         body.textContent = '';
         applyTheme(widget);
 
-        const data = readData();
-        const formState = { ...data };
+        const formState = normalizeFormState(readData());
 
         const intro = document.createElement('p');
         intro.className = 'oncb-muted';
-        intro.textContent = 'Build xparse declarations for commands and environments, then copy the generated snippet into your preamble or style file.';
+        intro.textContent = 'Use Guided mode for plain-language prompts, or switch to Expert mode if you already know the xparse syntax you want.';
         body.appendChild(intro);
 
         const form = document.createElement('div');
         form.className = 'oncb-form';
         body.appendChild(form);
 
-        const grid = document.createElement('div');
-        grid.className = 'oncb-grid';
-        form.appendChild(grid);
+        const setupCard = document.createElement('div');
+        setupCard.className = 'oncb-card';
+        const setupGrid = document.createElement('div');
+        setupGrid.className = 'oncb-grid';
+        setupCard.appendChild(setupGrid);
+        form.appendChild(setupCard);
 
-        const modeField = document.createElement('label');
-        modeField.className = 'oncb-field';
-        const modeLabel = document.createElement('span');
-        modeLabel.textContent = 'Build';
-        const modeSelect = document.createElement('select');
-        modeSelect.className = 'oncb-input';
-        [['command', 'Command'], ['environment', 'Environment']].forEach(([value, label]) => {
-            const option = document.createElement('option');
-            option.value = value;
-            option.textContent = label;
-            option.selected = formState.mode === value;
-            modeSelect.appendChild(option);
-        });
-        modeField.append(modeLabel, modeSelect);
-        grid.appendChild(modeField);
+        function createSelectField(labelText, options) {
+            const field = document.createElement('label');
+            field.className = 'oncb-field';
+            const label = document.createElement('span');
+            label.textContent = labelText;
+            const select = document.createElement('select');
+            select.className = 'oncb-input';
+            options.forEach(([value, text]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                select.appendChild(option);
+            });
+            field.append(label, select);
+            return { field, select };
+        }
 
-        const declarationField = document.createElement('label');
-        declarationField.className = 'oncb-field';
-        const declarationLabel = document.createElement('span');
-        declarationLabel.textContent = 'Declaration';
-        const declarationSelect = document.createElement('select');
-        declarationSelect.className = 'oncb-input';
-        declarationField.append(declarationLabel, declarationSelect);
-        grid.appendChild(declarationField);
+        function createInputField(labelText, placeholder = '') {
+            const field = document.createElement('label');
+            field.className = 'oncb-field';
+            const label = document.createElement('span');
+            label.textContent = labelText;
+            const input = document.createElement('input');
+            input.className = 'oncb-input';
+            input.placeholder = placeholder;
+            field.append(label, input);
+            return { field, input };
+        }
 
-        const nameField = document.createElement('label');
-        nameField.className = 'oncb-field';
-        const nameLabel = document.createElement('span');
-        nameLabel.textContent = 'Name';
-        const nameInput = document.createElement('input');
-        nameInput.className = 'oncb-input';
-        nameField.append(nameLabel, nameInput);
-        grid.appendChild(nameField);
+        function createTextareaField(labelText) {
+            const field = document.createElement('label');
+            field.className = 'oncb-field';
+            const label = document.createElement('span');
+            label.textContent = labelText;
+            const textarea = document.createElement('textarea');
+            textarea.className = 'oncb-input';
+            field.append(label, textarea);
+            return { field, label, textarea };
+        }
 
-        const specField = document.createElement('label');
-        specField.className = 'oncb-field';
-        const specLabel = document.createElement('span');
-        specLabel.textContent = 'Argument spec';
-        const specInput = document.createElement('input');
-        specInput.className = 'oncb-input';
-        specInput.placeholder = 'm O{default} s';
-        specField.append(specLabel, specInput);
-        grid.appendChild(specField);
+        const editorModeField = createSelectField('Editor mode', [['guided', 'Guided'], ['expert', 'Expert']]);
+        const modeField = createSelectField('Build', [['command', 'Command'], ['environment', 'Environment']]);
+        const nameField = createInputField('Name');
+        setupGrid.append(editorModeField.field, modeField.field, nameField.field);
+
+        const guidedCard = document.createElement('div');
+        guidedCard.className = 'oncb-card';
+        form.appendChild(guidedCard);
+
+        const guidedIntro = document.createElement('p');
+        guidedIntro.className = 'oncb-help';
+        guidedIntro.textContent = 'Answer a few plain-language questions and the builder will choose the declaration form, argument spec, and starter template for you.';
+        guidedCard.appendChild(guidedIntro);
+
+        const guidedGrid = document.createElement('div');
+        guidedGrid.className = 'oncb-grid';
+        guidedCard.appendChild(guidedGrid);
+
+        const actionField = createSelectField('What do you want to do?', []);
+        const declarationPreviewField = createInputField('Builder will use');
+        declarationPreviewField.input.readOnly = true;
+        const requiredArgsField = createSelectField('How many required inputs?', [['0', '0'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']]);
+        const optionalArgField = createSelectField('Add an optional first input?', [['false', 'No'], ['true', 'Yes']]);
+        const optionalDefaultField = createInputField('Optional default value', 'leave blank for a plain optional input');
+        const argSpecPreviewField = createInputField('Generated argument spec');
+        argSpecPreviewField.input.readOnly = true;
+        guidedGrid.append(
+            actionField.field,
+            declarationPreviewField.field,
+            requiredArgsField.field,
+            optionalArgField.field,
+            optionalDefaultField.field,
+            argSpecPreviewField.field,
+        );
+
+        const actionHelp = document.createElement('p');
+        actionHelp.className = 'oncb-help';
+        guidedCard.appendChild(actionHelp);
+
+        const guidedCommandField = createTextareaField('What should the command do?');
+        guidedCommandField.textarea.placeholder = 'Example: Make the text bold and prefix it with “Remark:”.';
+        guidedCard.appendChild(guidedCommandField.field);
+
+        const guidedBeginField = createTextareaField('What should happen when the environment starts?');
+        guidedBeginField.textarea.placeholder = 'Example: Start a boxed block with a bold title.';
+        guidedCard.appendChild(guidedBeginField.field);
+
+        const guidedEndField = createTextareaField('What should happen when the environment ends?');
+        guidedEndField.textarea.placeholder = 'Example: Close the box and add a little spacing.';
+        guidedCard.appendChild(guidedEndField.field);
+
+        const expertCard = document.createElement('div');
+        expertCard.className = 'oncb-card';
+        form.appendChild(expertCard);
+
+        const expertIntro = document.createElement('p');
+        expertIntro.className = 'oncb-help';
+        expertIntro.textContent = 'Expert mode exposes the raw declaration, argument spec, and body fields directly.';
+        expertCard.appendChild(expertIntro);
+
+        const expertGrid = document.createElement('div');
+        expertGrid.className = 'oncb-grid';
+        expertCard.appendChild(expertGrid);
+
+        const declarationField = createSelectField('Declaration', []);
+        const specField = createInputField('Argument spec', 'm O{default} s');
+        expertGrid.append(declarationField.field, specField.field);
 
         const tokenCard = document.createElement('div');
         tokenCard.className = 'oncb-card';
@@ -711,24 +964,13 @@
         const tokenRow = document.createElement('div');
         tokenRow.className = 'oncb-token-row';
         tokenCard.append(tokenTitle, tokenRow);
-        form.appendChild(tokenCard);
+        expertCard.appendChild(tokenCard);
 
-        const bodyField = document.createElement('label');
-        bodyField.className = 'oncb-field';
-        const bodyLabel = document.createElement('span');
-        const bodyArea = document.createElement('textarea');
-        bodyArea.className = 'oncb-input';
-        bodyField.append(bodyLabel, bodyArea);
-        form.appendChild(bodyField);
+        const bodyField = createTextareaField('Command body');
+        expertCard.appendChild(bodyField.field);
 
-        const afterField = document.createElement('label');
-        afterField.className = 'oncb-field';
-        const afterLabel = document.createElement('span');
-        afterLabel.textContent = 'End code';
-        const afterArea = document.createElement('textarea');
-        afterArea.className = 'oncb-input';
-        afterField.append(afterLabel, afterArea);
-        form.appendChild(afterField);
+        const afterField = createTextareaField('End code');
+        expertCard.appendChild(afterField.field);
 
         const snippetCard = document.createElement('div');
         snippetCard.className = 'oncb-preview';
@@ -747,7 +989,7 @@
         notesTitle.textContent = 'Usage notes';
         const notesOutput = document.createElement('textarea');
         notesOutput.className = 'oncb-input';
-        notesOutput.style.minHeight = '120px';
+        notesOutput.style.minHeight = '140px';
         notesCard.append(notesTitle, notesOutput);
         body.appendChild(notesCard);
 
@@ -768,74 +1010,164 @@
         actions.append(copySnippetButton, copyNotesButton, resetButton);
         body.appendChild(actions);
 
+        function syncActionOptions() {
+            const options = getActionOptions(formState.mode);
+            const nextValue = normalizeAction(formState.mode, formState.action);
+            formState.action = nextValue;
+            actionField.select.textContent = '';
+            options.forEach(optionData => {
+                const option = document.createElement('option');
+                option.value = optionData.value;
+                option.textContent = optionData.label;
+                option.selected = optionData.value === nextValue;
+                actionField.select.appendChild(option);
+            });
+        }
+
         function syncDeclarationOptions() {
             const options = getDeclarationOptions(formState.mode);
             const nextValue = options.includes(formState.declaration) ? formState.declaration : options[0];
             formState.declaration = nextValue;
-            declarationSelect.textContent = '';
+            declarationField.select.textContent = '';
             options.forEach(value => {
                 const option = document.createElement('option');
                 option.value = value;
                 option.textContent = value;
                 option.selected = value === nextValue;
-                declarationSelect.appendChild(option);
+                declarationField.select.appendChild(option);
             });
         }
 
-        function syncVisibility() {
-            const isEnvironment = formState.mode === 'environment';
-            bodyLabel.textContent = isEnvironment ? 'Begin code' : 'Command body';
-            afterField.hidden = !isEnvironment;
-            nameInput.placeholder = isEnvironment ? 'myenvironment' : '\\mycommand';
-        }
-
         function refreshOutputs() {
-            writeData(formState);
+            formState.uiMode = normalizeUiMode(formState.uiMode);
+            formState.mode = formState.mode === 'environment' ? 'environment' : 'command';
+            formState.action = normalizeAction(formState.mode, formState.action);
+            formState.requiredArgs = normalizeRequiredArgs(formState.requiredArgs);
+            formState.hasOptionalArg = Boolean(formState.hasOptionalArg);
+            if (formState.uiMode === 'guided') {
+                syncGuidedFields(formState);
+            }
+
+            syncActionOptions();
             syncDeclarationOptions();
-            syncVisibility();
-            nameInput.value = formState.name;
-            specInput.value = formState.argSpec;
-            bodyArea.value = getSuggestedBody(formState.mode, formState);
-            afterArea.value = formState.environmentAfter || '% end code';
+
+            const isEnvironment = formState.mode === 'environment';
+            const actionDetails = getActionDetails(formState.mode, formState.action);
+
+            editorModeField.select.value = formState.uiMode;
+            modeField.select.value = formState.mode;
+            nameField.input.placeholder = isEnvironment ? 'myenvironment' : '\\mycommand';
+            nameField.input.value = formState.name;
+
+            guidedCard.hidden = formState.uiMode !== 'guided';
+            expertCard.hidden = formState.uiMode !== 'expert';
+
+            actionField.select.value = formState.action;
+            declarationPreviewField.input.value = actionDetails.declaration;
+            requiredArgsField.select.value = String(formState.requiredArgs);
+            optionalArgField.select.value = String(formState.hasOptionalArg);
+            optionalDefaultField.field.hidden = !formState.hasOptionalArg;
+            optionalDefaultField.input.value = formState.optionalDefault;
+            argSpecPreviewField.input.value = formState.argSpec || '(none)';
+            actionHelp.textContent = actionDetails.help;
+
+            guidedCommandField.field.hidden = isEnvironment;
+            guidedBeginField.field.hidden = !isEnvironment;
+            guidedEndField.field.hidden = !isEnvironment;
+            guidedCommandField.textarea.value = formState.commandPurpose;
+            guidedBeginField.textarea.value = formState.environmentStartDescription;
+            guidedEndField.textarea.value = formState.environmentEndDescription;
+
+            declarationField.select.value = formState.declaration;
+            specField.input.value = formState.argSpec;
+            bodyField.label.textContent = isEnvironment ? 'Begin code' : 'Command body';
+            bodyField.textarea.value = getSuggestedBody(formState.mode, formState);
+            afterField.field.hidden = !isEnvironment;
+            afterField.textarea.value = formState.environmentAfter || '% end code';
+
             snippetOutput.value = buildSnippet(formState);
             notesOutput.value = buildUsageNotes(formState);
-            setFooterText(widget, `${formState.mode === 'environment' ? 'Environment' : 'Command'} draft saved locally for ${getProjectName()}`);
+            writeData(formState);
+            setFooterText(widget, `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`);
         }
 
-        modeSelect.addEventListener('change', () => {
-            formState.mode = modeSelect.value;
-            formState.name = formState.mode === 'environment' ? 'myenvironment' : '\\mycommand';
-            formState.declaration = getDeclarationOptions(formState.mode)[0];
-            formState.argSpec = formState.mode === 'environment' ? 'm' : 'm';
+        editorModeField.select.addEventListener('change', () => {
+            formState.uiMode = editorModeField.select.value;
             refreshOutputs();
         });
 
-        declarationSelect.addEventListener('change', () => {
-            formState.declaration = declarationSelect.value;
-            refreshOutputs();
-        });
-
-        nameInput.addEventListener('input', () => {
-            formState.name = nameInput.value;
-            refreshOutputs();
-        });
-
-        specInput.addEventListener('input', () => {
-            formState.argSpec = specInput.value;
-            refreshOutputs();
-        });
-
-        bodyArea.addEventListener('input', () => {
-            if (formState.mode === 'environment') {
-                formState.environmentBody = bodyArea.value;
-            } else {
-                formState.commandBody = bodyArea.value;
+        modeField.select.addEventListener('change', () => {
+            const previousMode = formState.mode;
+            formState.mode = modeField.select.value;
+            formState.action = normalizeAction(formState.mode, formState.action);
+            const defaultPreviousName = previousMode === 'environment' ? 'myenvironment' : '\\mycommand';
+            if (!String(formState.name || '').trim() || formState.name === defaultPreviousName) {
+                formState.name = formState.mode === 'environment' ? 'myenvironment' : '\\mycommand';
             }
             refreshOutputs();
         });
 
-        afterArea.addEventListener('input', () => {
-            formState.environmentAfter = afterArea.value;
+        nameField.input.addEventListener('input', () => {
+            formState.name = nameField.input.value;
+            refreshOutputs();
+        });
+
+        actionField.select.addEventListener('change', () => {
+            formState.action = actionField.select.value;
+            refreshOutputs();
+        });
+
+        requiredArgsField.select.addEventListener('change', () => {
+            formState.requiredArgs = Number(requiredArgsField.select.value);
+            refreshOutputs();
+        });
+
+        optionalArgField.select.addEventListener('change', () => {
+            formState.hasOptionalArg = optionalArgField.select.value === 'true';
+            refreshOutputs();
+        });
+
+        optionalDefaultField.input.addEventListener('input', () => {
+            formState.optionalDefault = optionalDefaultField.input.value;
+            refreshOutputs();
+        });
+
+        guidedCommandField.textarea.addEventListener('input', () => {
+            formState.commandPurpose = guidedCommandField.textarea.value;
+            refreshOutputs();
+        });
+
+        guidedBeginField.textarea.addEventListener('input', () => {
+            formState.environmentStartDescription = guidedBeginField.textarea.value;
+            refreshOutputs();
+        });
+
+        guidedEndField.textarea.addEventListener('input', () => {
+            formState.environmentEndDescription = guidedEndField.textarea.value;
+            refreshOutputs();
+        });
+
+        declarationField.select.addEventListener('change', () => {
+            formState.declaration = declarationField.select.value;
+            refreshOutputs();
+        });
+
+        specField.input.addEventListener('input', () => {
+            formState.argSpec = specField.input.value;
+            refreshOutputs();
+        });
+
+        bodyField.textarea.addEventListener('input', () => {
+            if (formState.mode === 'environment') {
+                formState.environmentBody = bodyField.textarea.value;
+            } else {
+                formState.commandBody = bodyField.textarea.value;
+            }
+            refreshOutputs();
+        });
+
+        afterField.textarea.addEventListener('input', () => {
+            formState.environmentAfter = afterField.textarea.value;
             refreshOutputs();
         });
 
@@ -845,6 +1177,7 @@
             button.className = 'oncb-token';
             button.innerHTML = `<code>${token}</code> · ${label}`;
             button.addEventListener('click', () => {
+                formState.uiMode = 'expert';
                 formState.argSpec = `${String(formState.argSpec || '').trim()} ${token}`.trim();
                 refreshOutputs();
             });
@@ -852,9 +1185,9 @@
         });
 
         [
-            ['Zero-arg command', { mode: 'command', declaration: '\\NewDocumentCommand', name: '\\alertbox', argSpec: '', commandBody: '\\textbf{Alert}', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Optional argument command', { mode: 'command', declaration: '\\NewDocumentCommand', name: '\\todoitem', argSpec: 'O{TODO} m', commandBody: '\\textbf{#1}: #2', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Simple environment', { mode: 'environment', declaration: '\\NewDocumentEnvironment', name: 'infobox', argSpec: 'm', commandBody: formState.commandBody, environmentBody: '\\par\\noindent\\textbf{#1}\\par', environmentAfter: '\\par' }],
+            ['Zero-arg command', { uiMode: 'expert', mode: 'command', declaration: '\\NewDocumentCommand', name: '\\alertbox', argSpec: '', commandBody: '\\textbf{Alert}', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
+            ['Optional argument command', { uiMode: 'expert', mode: 'command', declaration: '\\NewDocumentCommand', name: '\\todoitem', argSpec: 'O{TODO} m', commandBody: '\\textbf{#1}: #2', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
+            ['Simple environment', { uiMode: 'expert', mode: 'environment', declaration: '\\NewDocumentEnvironment', name: 'infobox', argSpec: 'm', commandBody: formState.commandBody, environmentBody: '\\par\\noindent\\textbf{#1}\\par', environmentAfter: '\\par' }],
         ].forEach(([label, preset]) => {
             const button = document.createElement('button');
             button.type = 'button';
@@ -878,18 +1211,8 @@
         });
 
         resetButton.addEventListener('click', () => {
-            Object.assign(formState, cloneDefaultData());
+            Object.assign(formState, normalizeFormState(cloneDefaultData()));
             refreshOutputs();
-        });
-
-        Object.assign(formState, {
-            mode: formState.mode === 'environment' ? 'environment' : 'command',
-            declaration: formState.declaration || CONFIG.defaultData.declaration,
-            name: formState.name || CONFIG.defaultData.name,
-            argSpec: formState.argSpec ?? CONFIG.defaultData.argSpec,
-            commandBody: formState.commandBody || CONFIG.defaultData.commandBody,
-            environmentBody: formState.environmentBody || CONFIG.defaultData.environmentBody,
-            environmentAfter: formState.environmentAfter || CONFIG.defaultData.environmentAfter,
         });
 
         refreshOutputs();

@@ -81,12 +81,16 @@
         return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
     }
 
+    function getProjectStorageScope() {
+        return getProjectId() || `fallback-page:${window.location.pathname}${window.location.search}`;
+    }
+
     function getNotesStorageKey() {
-        return `experimental-overleaf-sidebar-local-notepad:${getProjectId() || 'unknown-project'}`;
+        return `experimental-overleaf-sidebar-local-notepad:${getProjectStorageScope()}`;
     }
 
     function getChecklistStorageKey() {
-        return `experimental-overleaf-sidebar-checklist:${getProjectId() || 'unknown-project'}`;
+        return `experimental-overleaf-sidebar-checklist:${getProjectStorageScope()}`;
     }
 
     function getPositionStorageKey(panelId) {
