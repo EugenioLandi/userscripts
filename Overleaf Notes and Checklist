@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf Notes and Checklist
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Add centered Overleaf sidebar buttons for independent floating notes and checklist widgets
 // @author       You
 // @match        https://*.overleaf.com/project/*
@@ -139,37 +139,18 @@
         return { tabsWrapper, fileTreeButton, templateButton, tabContent };
     }
 
-    function parseLuminance(colorString) {
-        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-        if (!match) return 0.5;
-        const [r, g, b] = [+match[1], +match[2], +match[3]];
-        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    }
-
-    function colorWithAlpha(colorString, alpha, fallback) {
-        const match = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-        if (!match) return fallback;
-        return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
-    }
-
     function detectTheme() {
-        const nativePane = document.querySelector(`${NATIVE_TAB_CONTENT_SELECTOR} .tab-pane.active`) || document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
-        const styles = nativePane ? getComputedStyle(nativePane) : null;
-        const bg = styles?.backgroundColor || '';
-        const fg = styles?.color || '';
-        const border = styles?.borderColor || '';
-        const isDark = bg && parseLuminance(bg) < 0.35;
         return {
-            bg: colorWithAlpha(bg, isDark ? 0.96 : 0.97, isDark ? 'rgba(27, 39, 51, 0.96)' : 'rgba(255, 255, 255, 0.97)'),
-            fg: fg || (isDark ? '#d9e0e8' : '#1b2733'),
-            border: colorWithAlpha(border, isDark ? 0.3 : 0.22, isDark ? 'rgba(200,210,220,0.3)' : 'rgba(125,125,125,0.22)'),
-            muted: isDark ? 'rgba(196,206,216,0.88)' : 'rgba(75,85,95,0.92)',
-            buttonBg: isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.12)',
-            hover: isDark ? 'rgba(200,210,220,0.18)' : 'rgba(125,125,125,0.16)',
-            inputBg: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.94)',
-            focus: isDark ? '#79b8ff' : '#1a73e8',
-            cardBg: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.82)',
-            activeButtonBg: isDark ? 'rgba(200,210,220,0.24)' : 'rgba(20, 115, 230, 0.18)',
+            bg: '#1b222c',
+            fg: '#dbe5f3',
+            border: '#46566f',
+            muted: '#aab6c8',
+            buttonBg: '#273142',
+            hover: '#354258',
+            inputBg: '#2f3a4c',
+            focus: '#88b7ff',
+            cardBg: '#2f3a4c',
+            activeButtonBg: '#2f3a4c',
         };
     }
 
@@ -203,7 +184,7 @@
                 flex: 0 0 auto;
             }
             [${BUTTON_ATTR}].is-open {
-                background: var(--overleaf-notes-checklist-active-button-bg, rgba(20, 115, 230, 0.12)) !important;
+                background: var(--overleaf-notes-checklist-active-button-bg, #2f3a4c) !important;
                 box-shadow: none !important;
             }
             [${WIDGET_ATTR}] {
@@ -219,9 +200,9 @@
                 max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
                 overflow: hidden;
                 resize: both;
-                border: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.18));
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 border-radius: 14px;
-                background: var(--overleaf-notes-checklist-bg, rgba(255, 255, 255, 0.97));
+                background: var(--overleaf-notes-checklist-bg, #1b222c);
                 color: var(--overleaf-notes-checklist-fg, #1b2733);
                 box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
             }
@@ -234,7 +215,7 @@
                 justify-content: space-between;
                 gap: 10px;
                 padding: 14px 16px;
-                border-bottom: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.18));
+                border-bottom: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 cursor: grab;
                 user-select: none;
                 touch-action: none;
@@ -271,7 +252,7 @@
                 justify-content: center;
             }
             [${WIDGET_ATTR}] .onc-close:hover {
-                background: var(--overleaf-notes-checklist-hover, rgba(125,125,125,0.1));
+                background: var(--overleaf-notes-checklist-hover, #354258);
             }
             [${WIDGET_ATTR}] .onc-body {
                 flex: 1 1 auto;
@@ -285,7 +266,7 @@
             }
             [${WIDGET_ATTR}] .onc-footer {
                 padding: 10px 16px 14px;
-                border-top: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.18));
+                border-top: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 font-size: 0.6875rem;
                 line-height: 1.45;
                 color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
@@ -310,10 +291,10 @@
             [${WIDGET_ATTR}] .onc-textarea {
                 width: 100%;
                 box-sizing: border-box;
-                border: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.22));
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 border-radius: 6px;
                 padding: 8px 10px;
-                background: var(--overleaf-notes-checklist-input-bg, rgba(255,255,255,0.88));
+                background: var(--overleaf-notes-checklist-input-bg, #2f3a4c);
                 color: inherit;
                 font: inherit;
                 font-size: 0.8125rem;
@@ -326,10 +307,10 @@
                 line-height: 1.55;
             }
             [${WIDGET_ATTR}] .onc-button {
-                border: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.22));
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 border-radius: 6px;
                 padding: 6px 10px;
-                background: var(--overleaf-notes-checklist-button-bg, rgba(125,125,125,0.06));
+                background: var(--overleaf-notes-checklist-button-bg, #273142);
                 color: inherit;
                 cursor: pointer;
                 display: inline-flex;
@@ -341,7 +322,7 @@
                 line-height: 1.3;
             }
             [${WIDGET_ATTR}] .onc-button:hover {
-                background: var(--overleaf-notes-checklist-hover, rgba(125,125,125,0.1));
+                background: var(--overleaf-notes-checklist-hover, #354258);
             }
             [${WIDGET_ATTR}] .onc-list {
                 list-style: none;
@@ -355,10 +336,10 @@
                 display: flex;
                 align-items: flex-start;
                 gap: 10px;
-                border: 1px solid var(--overleaf-notes-checklist-border, rgba(125,125,125,0.18));
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
                 border-radius: 6px;
                 padding: 10px 12px;
-                background: var(--overleaf-notes-checklist-card-bg, rgba(255,255,255,0.5));
+                background: var(--overleaf-notes-checklist-card-bg, #2f3a4c);
                 box-sizing: border-box;
             }
         `;
