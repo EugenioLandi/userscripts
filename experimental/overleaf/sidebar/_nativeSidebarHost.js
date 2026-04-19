@@ -17,6 +17,16 @@
     const WIDGET_WIDTH = 360;
     const WIDGET_MIN_TOP = 72;
     const WIDGET_PADDING = 16;
+    const EXCLUDED_BUTTON_CLASSES = [
+        'd-flex',
+        'flex-column',
+        'align-items-center',
+        'justify-content-center',
+        'text-center',
+        'p-0',
+        'px-0',
+        'py-0',
+    ];
 
     const state = {
         panels: new Map(),
@@ -232,7 +242,7 @@
                 width: min(${WIDGET_WIDTH}px, calc(100vw - ${WIDGET_PADDING * 2}px));
                 max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
                 max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
-                min-height: 240px;
+                min-height: 200px;
                 overflow: hidden;
                 border: 1px solid var(--ol-sidebar-border, rgba(125, 125, 125, 0.18));
                 border-radius: 14px;
@@ -345,7 +355,7 @@
                 outline: none;
             }
             #${WIDGET_ID} .ol-native-sidebar-textarea {
-                min-height: 240px;
+                min-height: 200px;
                 resize: vertical;
                 font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
                 font-size: 0.75rem;
@@ -389,7 +399,7 @@
             }
             .overall-theme-dark #${WIDGET_ID},
             [data-theme="dark"] #${WIDGET_ID} {
-                --ol-sidebar-bg: rgba(27, 39, 51, 0.96);
+                --ol-sidebar-bg: #1b2733;
                 --ol-sidebar-fg: #d9e0e8;
                 --ol-sidebar-border: rgba(200, 210, 220, 0.12);
                 --ol-sidebar-muted: rgba(180, 190, 200, 0.72);
@@ -417,9 +427,7 @@
 
     function createCustomTabButton(panel, templateButton) {
         const button = document.createElement('button');
-        const nativeClasses = [...templateButton.classList].filter(cls =>
-            !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(cls)
-        );
+        const nativeClasses = [...templateButton.classList].filter(cls => !EXCLUDED_BUTTON_CLASSES.includes(cls));
         button.className = nativeClasses.join(' ');
         button.setAttribute(TAB_ATTR, panel.id);
         button.dataset.panelId = panel.id;
@@ -463,7 +471,7 @@
         const border = paneStyles?.borderColor || '';
         const isDark = bg && parseLuminance(bg) < 0.35;
         return {
-            bg: bg || (isDark ? 'rgba(27, 39, 51, 0.96)' : 'rgba(255, 255, 255, 0.96)'),
+            bg: bg || (isDark ? '#1b2733' : '#fff'),
             fg: fg || (isDark ? '#d9e0e8' : '#1b2733'),
             border: border || (isDark ? 'rgba(200,210,220,0.12)' : 'rgba(125,125,125,0.18)'),
             muted: isDark ? 'rgba(180,190,200,0.72)' : 'rgba(90,100,110,0.88)',
@@ -499,12 +507,10 @@
             button.style.removeProperty('background');
             button.style.removeProperty('background-color');
             button.style.removeProperty('box-shadow');
-            button.style.removeProperty('transform');
             if (state.isOpen && button.dataset.panelId === state.activeId) {
                 button.style.backgroundColor = activeStyles?.backgroundColor || 'rgba(25, 135, 84, 0.18)';
                 button.style.color = activeStyles?.color || buttonStyles?.color || '';
                 button.style.boxShadow = activeStyles?.boxShadow || 'none';
-                button.style.transform = 'scale(1.03)';
             }
         });
     }
