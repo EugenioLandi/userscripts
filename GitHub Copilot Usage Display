@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.4.1
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/copilot*
+// @match        https://github.com/*/agents*
+// @match        https://github.com/*/tasks/*
 // @match        https://github.com/features/copilot*
 // @match        https://github.com/settings/copilot*
-// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
-// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display%20by%20You
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20Copilot%20Usage%20Display
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
