@@ -37,6 +37,7 @@
         footerText: '',
         refreshTimer: null,
         observer: null,
+        resizeTimer: null,
         lastHref: global.location.href,
     };
 
@@ -738,8 +739,11 @@
         global.addEventListener('hashchange', () => scheduleSync(0));
         global.addEventListener('focus', () => scheduleSync(0));
         global.addEventListener('resize', () => {
-            const widget = document.getElementById(WIDGET_ID);
-            if (widget) restoreWidgetPosition(widget);
+            global.clearTimeout(state.resizeTimer);
+            state.resizeTimer = global.setTimeout(() => {
+                const widget = document.getElementById(WIDGET_ID);
+                if (widget) restoreWidgetPosition(widget);
+            }, DOM_SYNC_DEBOUNCE_MS);
         });
     }
 
