@@ -56,7 +56,7 @@
         refreshTimer: null,
         observer: null,
         resizeTimer: null,
-        zIndex: 100_000,
+        zIndex: 100000,
         lastHref: window.location.href,
         lastProjectId: getProjectId(),
     };

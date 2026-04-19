@@ -28,8 +28,8 @@
         minHeight: 420,
         defaultData: {
             mode: 'command',
-            declaration: '\\\\NewDocumentCommand',
-            name: '\\\\mycommand',
+            declaration: '\\NewDocumentCommand',
+            name: '\\mycommand',
             argSpec: 'm',
             commandBody: '% #1',
             environmentBody: '% begin code',
@@ -49,20 +49,20 @@
     const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a, label';
 
     const COMMAND_DECLARATIONS = [
-        '\\\\NewDocumentCommand',
-        '\\\\RenewDocumentCommand',
-        '\\\\ProvideDocumentCommand',
-        '\\\\DeclareDocumentCommand',
-        '\\\\NewExpandableDocumentCommand',
-        '\\\\RenewExpandableDocumentCommand',
-        '\\\\ProvideExpandableDocumentCommand',
+        '\\NewDocumentCommand',
+        '\\RenewDocumentCommand',
+        '\\ProvideDocumentCommand',
+        '\\DeclareDocumentCommand',
+        '\\NewExpandableDocumentCommand',
+        '\\RenewExpandableDocumentCommand',
+        '\\ProvideExpandableDocumentCommand',
     ];
 
     const ENVIRONMENT_DECLARATIONS = [
-        '\\\\NewDocumentEnvironment',
-        '\\\\RenewDocumentEnvironment',
-        '\\\\ProvideDocumentEnvironment',
-        '\\\\DeclareDocumentEnvironment',
+        '\\NewDocumentEnvironment',
+        '\\RenewDocumentEnvironment',
+        '\\ProvideDocumentEnvironment',
+        '\\DeclareDocumentEnvironment',
     ];
 
     const SPEC_TOKENS = [
@@ -82,7 +82,7 @@
         refreshTimer: null,
         observer: null,
         resizeTimer: null,
-        zIndex: 100_000,
+        zIndex: 100000,
         lastHref: window.location.href,
     };
 
@@ -590,9 +590,9 @@
 
     function normalizeName(value, mode) {
         const raw = String(value || '').trim();
-        if (!raw) return mode === 'environment' ? 'myenvironment' : '\\\\mycommand';
+        if (!raw) return mode === 'environment' ? 'myenvironment' : '\\mycommand';
         if (mode === 'environment') return raw.replace(/^\\+/, '');
-        return raw.startsWith('\\') ? raw : `\\\\${raw}`;
+        return raw.startsWith('\\') ? raw : `\\${raw}`;
     }
 
     function getDeclarationOptions(mode) {
@@ -630,7 +630,7 @@
             mode === 'environment' ? `Environment name: ${bareName}` : `Command name: ${normalized}`,
             spec ? `Argument spec: ${spec}` : 'Argument spec: (none)',
             mode === 'environment'
-                ? `Usage:\n\\\\begin{${bareName}} ... \\\\end{${bareName}}`
+                ? `Usage:\n\\begin{${bareName}} ... \\end{${bareName}}`
                 : `Usage:\n${normalized}{...}`,
         ];
         return notes.join('\n\n');
@@ -786,7 +786,7 @@
             const isEnvironment = formState.mode === 'environment';
             bodyLabel.textContent = isEnvironment ? 'Begin code' : 'Command body';
             afterField.hidden = !isEnvironment;
-            nameInput.placeholder = isEnvironment ? 'myenvironment' : '\\\\mycommand';
+            nameInput.placeholder = isEnvironment ? 'myenvironment' : '\\mycommand';
         }
 
         function refreshOutputs() {
@@ -804,7 +804,7 @@
 
         modeSelect.addEventListener('change', () => {
             formState.mode = modeSelect.value;
-            formState.name = formState.mode === 'environment' ? 'myenvironment' : '\\\\mycommand';
+            formState.name = formState.mode === 'environment' ? 'myenvironment' : '\\mycommand';
             formState.declaration = getDeclarationOptions(formState.mode)[0];
             formState.argSpec = formState.mode === 'environment' ? 'm' : 'm';
             refreshOutputs();
@@ -852,9 +852,9 @@
         });
 
         [
-            ['Zero-arg command', { mode: 'command', declaration: '\\\\NewDocumentCommand', name: '\\\\alertbox', argSpec: '', commandBody: '\\\\textbf{Alert}', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Optional argument command', { mode: 'command', declaration: '\\\\NewDocumentCommand', name: '\\\\todoitem', argSpec: 'O{TODO} m', commandBody: '\\\\textbf{#1}: #2', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Simple environment', { mode: 'environment', declaration: '\\\\NewDocumentEnvironment', name: 'infobox', argSpec: 'm', commandBody: formState.commandBody, environmentBody: '\\\\par\\\\noindent\\\\textbf{#1}\\\\par', environmentAfter: '\\\\par' }],
+            ['Zero-arg command', { mode: 'command', declaration: '\\NewDocumentCommand', name: '\\alertbox', argSpec: '', commandBody: '\\textbf{Alert}', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
+            ['Optional argument command', { mode: 'command', declaration: '\\NewDocumentCommand', name: '\\todoitem', argSpec: 'O{TODO} m', commandBody: '\\textbf{#1}: #2', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
+            ['Simple environment', { mode: 'environment', declaration: '\\NewDocumentEnvironment', name: 'infobox', argSpec: 'm', commandBody: formState.commandBody, environmentBody: '\\par\\noindent\\textbf{#1}\\par', environmentAfter: '\\par' }],
         ].forEach(([label, preset]) => {
             const button = document.createElement('button');
             button.type = 'button';
