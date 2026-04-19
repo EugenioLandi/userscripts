@@ -269,7 +269,7 @@
             }
             #${WIDGET_ID} .experimental-overleaf-native-sidebar-heading {
                 min-width: 0;
-                flex: 1 1 auto;
+                flex: 0 1 auto;
             }
             #${WIDGET_ID} .experimental-overleaf-native-sidebar-title {
                 margin: 0;
