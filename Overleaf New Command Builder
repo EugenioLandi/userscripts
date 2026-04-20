@@ -785,6 +785,10 @@
         return text ? text[0] : fallback;
     }
 
+    function normalizeGuidedDefaultValue(value) {
+        return String(value ?? '').replace(/\s*\r?\n\s*/g, ' ').trim();
+    }
+
     function getSuggestedGuidedLabel(kind, mode, index = 0) {
         const meta = getGuidedArgumentMeta(kind, mode);
         if (meta.defaultLabel === 'value') return `value ${index + 1}`;
@@ -797,7 +801,7 @@
             id: String(overrides.id || createUniqueId('arg')),
             kind: meta.value,
             label: String(overrides.label || getSuggestedGuidedLabel(meta.value, mode, index)),
-            defaultValue: String(overrides.defaultValue || ''),
+            defaultValue: normalizeGuidedDefaultValue(overrides.defaultValue),
             token: normalizeSingleCharacter(overrides.token, meta.defaultToken || '+'),
             open: normalizeSingleCharacter(overrides.open, meta.defaultOpen || '('),
             close: normalizeSingleCharacter(overrides.close, meta.defaultClose || ')'),
@@ -859,7 +863,7 @@
     function buildGuidedArgumentSpecToken(argument) {
         const open = normalizeSingleCharacter(argument.open, '(');
         const close = normalizeSingleCharacter(argument.close, ')');
-        const defaultValue = String(argument.defaultValue || '').trim();
+        const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
         switch (argument.kind) {
             case 'o':
                 return 'o';
@@ -889,13 +893,23 @@
         return (data.guidedArguments || []).map(buildGuidedArgumentSpecToken).join(' ');
     }
 
+    function getGuidedSpecWarnings(data) {
+        const warnings = [];
+        (data.guidedArguments || []).forEach((argument, index) => {
+            if ((argument.kind === 'O' || argument.kind === 'D') && /[{}]/.test(normalizeGuidedDefaultValue(argument.defaultValue))) {
+                warnings.push(`Argument ${index + 1}: defaults containing { or } can break the generated xparse spec.`);
+            }
+        });
+        return warnings;
+    }
+
     function buildGuidedParameterNotes(data) {
         const notes = [];
         const argumentsList = data.guidedArguments || [];
         argumentsList.forEach((argument, index) => {
             const position = index + 1;
             const label = getGuidedArgumentLabel(argument, index, data.mode);
-            const defaultValue = String(argument.defaultValue || '').trim();
+            const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
             const token = normalizeSingleCharacter(argument.token, '+');
             const open = normalizeSingleCharacter(argument.open, '(');
             const close = normalizeSingleCharacter(argument.close, ')');
@@ -954,7 +968,7 @@
 
     function buildGuidedUsageSegment(argument, index, mode) {
         const label = getGuidedArgumentLabel(argument, index, mode);
-        const defaultValue = String(argument.defaultValue || '').trim();
+        const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
         const token = normalizeSingleCharacter(argument.token, '+');
         const open = normalizeSingleCharacter(argument.open, '(');
         const close = normalizeSingleCharacter(argument.close, ')');
@@ -1132,6 +1146,7 @@
         const spec = String(data.argSpec || '').trim();
         if (data.uiMode === 'guided') {
             const actionDetails = getActionDetails(mode, data.action);
+            const specWarnings = getGuidedSpecWarnings(data);
             const notes = [
                 `Project: ${getProjectName()}`,
                 'Builder mode: Guided',
@@ -1144,6 +1159,7 @@
                 mode === 'environment'
                     ? `Starter brief:\nAt \\begin: ${String(data.environmentStartDescription || '').trim() || 'Describe the setup behavior.'}\nAt \\end: ${String(data.environmentEndDescription || '').trim() || 'Describe the teardown behavior.'}`
                     : `Starter brief:\n${String(data.commandPurpose || '').trim() || 'Describe what the command should do.'}`,
+                ...(specWarnings.length ? [`Spec warnings:\n${specWarnings.map(line => `- ${line}`).join('\n')}`] : []),
                 'Guided mode already generated a starter template with comments, usage hints, and boolean notes. Replace the comments with real LaTeX when ready.',
                 'Paste the generated declaration in your project preamble or in a .sty file that the project loads.',
             ];
@@ -1512,22 +1528,28 @@
                 });
 
                 tokenField?.input.addEventListener('input', () => {
-                    formState.guidedArguments[index].token = tokenField.input.value;
+                    const normalized = normalizeSingleCharacter(tokenField.input.value, meta.defaultToken || '+');
+                    tokenField.input.value = normalized;
+                    formState.guidedArguments[index].token = normalized;
                     refreshOutputs();
                 });
 
                 defaultField?.input.addEventListener('input', () => {
-                    formState.guidedArguments[index].defaultValue = defaultField.input.value;
+                    formState.guidedArguments[index].defaultValue = normalizeGuidedDefaultValue(defaultField.input.value);
                     refreshOutputs();
                 });
 
                 openField?.input.addEventListener('input', () => {
-                    formState.guidedArguments[index].open = openField.input.value;
+                    const normalized = normalizeSingleCharacter(openField.input.value, meta.defaultOpen || '(');
+                    openField.input.value = normalized;
+                    formState.guidedArguments[index].open = normalized;
                     refreshOutputs();
                 });
 
                 closeField?.input.addEventListener('input', () => {
-                    formState.guidedArguments[index].close = closeField.input.value;
+                    const normalized = normalizeSingleCharacter(closeField.input.value, meta.defaultClose || ')');
+                    closeField.input.value = normalized;
+                    formState.guidedArguments[index].close = normalized;
                     refreshOutputs();
                 });
             });
@@ -1596,7 +1618,10 @@
             snippetOutput.value = buildSnippet(formState);
             notesOutput.value = buildUsageNotes(formState);
             writeData(formState);
-            setFooterText(widget, `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`);
+            const specWarnings = getGuidedSpecWarnings(formState);
+            setFooterText(widget, specWarnings.length
+                ? `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()} · ${specWarnings[0]}`
+                : `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`);
         }
 
         editorModeField.select.addEventListener('change', () => {
