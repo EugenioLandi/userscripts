@@ -87,6 +87,7 @@
     ];
 
     const GUIDED_ARGUMENT_LIMIT = 8;
+    const GUIDED_ID_COUNTER_MODULUS = 36 ** 4;
     const GUIDED_ARGUMENT_TYPES = [
         { value: 'm', label: 'Required {...}', shortLabel: 'Required', help: 'Standard required input for text, labels, titles, lengths, and other must-provide values.', defaultLabel: 'value', example: '{value}' },
         { value: 'o', label: 'Optional [...]', shortLabel: 'Optional', help: 'Optional input that is only present when the caller supplies the bracketed value.', defaultLabel: 'optional value', example: '[optional]' },
@@ -763,8 +764,12 @@
     }
 
     function createUniqueId(prefix = 'id') {
-        uniqueIdCounter = (uniqueIdCounter + 1) % 1679616;
+        uniqueIdCounter = (uniqueIdCounter + 1) % GUIDED_ID_COUNTER_MODULUS;
         return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36).padStart(4, '0')}`;
+    }
+
+    function getLegacyOptionalArgumentKind(defaultValue) {
+        return String(defaultValue || '').trim() ? 'O' : 'o';
     }
 
     function getGuidedArgumentOptions(mode) {
@@ -804,7 +809,7 @@
         if (!source || typeof source !== 'object') return items;
         if (source.hasOptionalArg) {
             const defaultValue = String(source.optionalDefault || '');
-            items.push(createGuidedArgument(defaultValue.trim() ? 'O' : 'o', {
+            items.push(createGuidedArgument(getLegacyOptionalArgumentKind(defaultValue), {
                 label: 'optional value',
                 defaultValue,
             }, mode, items.length));
