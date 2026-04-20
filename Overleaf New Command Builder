@@ -74,7 +74,7 @@
     ];
 
     const SPEC_TOKENS = [
-        ['m', 'required'],
+        ['m', 'required {...}'],
         ['o', 'optional'],
         ['O{default}', 'optional with default'],
         ['s', 'star boolean'],
@@ -202,10 +202,14 @@
         return `overleaf-floating-widget:${CONFIG.slug}:${getProjectStorageScope()}:${kind}`;
     }
 
-    function cloneDefaultData() {
+    function deepClone(value) {
         return typeof structuredClone === 'function'
-            ? structuredClone(CONFIG.defaultData)
-            : JSON.parse(JSON.stringify(CONFIG.defaultData));
+            ? structuredClone(value)
+            : JSON.parse(JSON.stringify(value));
+    }
+
+    function cloneDefaultData() {
+        return deepClone(CONFIG.defaultData);
     }
 
     function readJson(key, fallback) {
@@ -759,8 +763,8 @@
     }
 
     function createUniqueId(prefix = 'id') {
-        uniqueIdCounter += 1;
-        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36)}`;
+        uniqueIdCounter = (uniqueIdCounter + 1) % 1679616;
+        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36).padStart(4, '0')}`;
     }
 
     function getGuidedArgumentOptions(mode) {
@@ -1085,7 +1089,7 @@
         merged.name = String(merged.name || (merged.mode === 'environment' ? 'myenvironment' : '\\mycommand'));
         merged.argSpec = String(merged.argSpec ?? '');
         merged.guidedArguments = normalizeGuidedArguments(
-            Object.hasOwn(raw, 'guidedArguments') ? raw.guidedArguments : null,
+            Object.prototype.hasOwnProperty.call(raw, 'guidedArguments') ? raw.guidedArguments : null,
             merged.mode,
             raw,
         );
@@ -1382,7 +1386,7 @@
         function applyPreset(preset) {
             Object.assign(formState, normalizeFormState({
                 ...cloneDefaultData(),
-                ...(typeof structuredClone === 'function' ? structuredClone(preset.data) : JSON.parse(JSON.stringify(preset.data))),
+                ...deepClone(preset.data),
             }));
             refreshOutputs({ rerenderArguments: true });
         }
