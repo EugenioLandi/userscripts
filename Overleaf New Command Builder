@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Overleaf New Command Builder
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
-// @description  Add a sidebar button that opens a floating builder for LaTeX document commands and environments in Overleaf
+// @version      1.1.0
+// @description  Build richer xparse command and environment declarations in Overleaf with booleans, examples, and guided argument helpers
 // @author       You
 // @match        https://*.overleaf.com/project/*
 // @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20New%20Command%20Builder
@@ -20,12 +20,12 @@
     const CONFIG = {
         slug: 'new-command-builder',
         title: 'New command builder',
-        subtitle: 'Generate xparse command and environment declarations with local draft persistence',
+        subtitle: 'Build xparse commands and environments with guided arguments, booleans, examples, and local draft persistence',
         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5 4 12l4 7"/><path d="M16 5l4 7-4 7"/><path d="M10 19h4"/><path d="M10 5h4"/></svg>',
-        defaultWidth: 500,
-        defaultHeight: 620,
-        minWidth: 380,
-        minHeight: 420,
+        defaultWidth: 560,
+        defaultHeight: 700,
+        minWidth: 420,
+        minHeight: 480,
         defaultData: {
             uiMode: 'guided',
             mode: 'command',
@@ -33,9 +33,9 @@
             declaration: '\\NewDocumentCommand',
             name: '\\mycommand',
             argSpec: 'm',
-            requiredArgs: 1,
-            hasOptionalArg: false,
-            optionalDefault: '',
+            guidedArguments: [
+                { id: 'default-arg-1', kind: 'm', label: 'text', defaultValue: '', token: '+', open: '(', close: ')' },
+            ],
             commandPurpose: 'Describe what the command should do in plain language.',
             environmentStartDescription: 'Describe what should happen when the environment starts.',
             environmentEndDescription: 'Describe what should happen when the environment ends.',
@@ -74,15 +74,95 @@
     ];
 
     const SPEC_TOKENS = [
-        ['m', 'mandatory'],
+        ['m', 'required {...}'],
         ['o', 'optional'],
         ['O{default}', 'optional with default'],
-        ['s', 'optional star'],
-        ['t+', 'literal token'],
+        ['s', 'star boolean'],
+        ['t+', 'token boolean'],
         ['r()', 'delimited required'],
         ['d[]', 'delimited optional'],
+        ['D(){default}', 'delimited optional with default'],
         ['v', 'verbatim'],
         ['b', 'env body'],
+    ];
+
+    const GUIDED_ARGUMENT_LIMIT = 8;
+    const GUIDED_ID_COUNTER_MODULUS = 36 ** 4;
+    const GUIDED_ARGUMENT_TYPES = [
+        { value: 'm', label: 'Required {...}', shortLabel: 'Required', help: 'Standard required input for text, labels, titles, lengths, and other must-provide values.', defaultLabel: 'value', example: '{value}' },
+        { value: 'o', label: 'Optional [...]', shortLabel: 'Optional', help: 'Optional input that is only present when the caller supplies the bracketed value.', defaultLabel: 'optional value', example: '[optional]' },
+        { value: 'O', label: 'Optional with default', shortLabel: 'Defaulted', help: 'Optional input with a fallback default so the common call stays short.', defaultLabel: 'optional value', example: '[TODO]', supportsDefault: true },
+        { value: 's', label: 'Star boolean', shortLabel: 'Star', help: 'Boolean switch for starred vs plain forms. Test it with \\IfBooleanTF{#n}{...}{...}.', defaultLabel: 'star toggle', example: '*' },
+        { value: 't', label: 'Token boolean', shortLabel: 'Token', help: 'Boolean switch triggered by a literal token such as + or !. Test it with \\IfBooleanTF{#n}{...}{...}.', defaultLabel: 'token toggle', example: '+', supportsToken: true, defaultToken: '+' },
+        { value: 'r', label: 'Delimited required', shortLabel: 'Delimited', help: 'Required input read between custom delimiters, such as (title) or <key>.', defaultLabel: 'delimited value', example: '(value)', supportsDelimiters: true, defaultOpen: '(', defaultClose: ')' },
+        { value: 'd', label: 'Delimited optional', shortLabel: 'Opt delimited', help: 'Optional delimited input, useful when a custom syntax already has natural wrappers.', defaultLabel: 'delimited value', example: '[value]', supportsDelimiters: true, defaultOpen: '[', defaultClose: ']' },
+        { value: 'D', label: 'Delimited optional with default', shortLabel: 'Delim default', help: 'Optional delimited input with a fallback default value.', defaultLabel: 'delimited value', example: '(value)', supportsDelimiters: true, supportsDefault: true, defaultOpen: '(', defaultClose: ')' },
+        { value: 'v', label: 'Verbatim', shortLabel: 'Verbatim', help: 'Verbatim input works well for code, paths, URLs, and other content that should not be re-tokenized.', defaultLabel: 'verbatim text', example: '|path/to/file|' },
+        { value: 'b', label: 'Environment body', shortLabel: 'Body', help: 'Environment-only argument that captures the body content as a numbered parameter.', defaultLabel: 'body content', example: 'body content', environmentOnly: true },
+    ];
+
+    const EXAMPLE_PRESETS = [
+        {
+            label: 'No-arg command',
+            data: {
+                uiMode: 'expert',
+                mode: 'command',
+                action: 'new',
+                declaration: '\\NewDocumentCommand',
+                name: '\\alertbox',
+                argSpec: '',
+                commandBody: '\\textbf{Alert}',
+            },
+        },
+        {
+            label: 'Defaulted optional',
+            data: {
+                uiMode: 'expert',
+                mode: 'command',
+                action: 'new',
+                declaration: '\\NewDocumentCommand',
+                name: '\\todoitem',
+                argSpec: 'O{TODO} m',
+                commandBody: '\\textbf{#1}: #2',
+            },
+        },
+        {
+            label: 'Star boolean',
+            data: {
+                uiMode: 'expert',
+                mode: 'command',
+                action: 'new',
+                declaration: '\\NewDocumentCommand',
+                name: '\\term',
+                argSpec: 's m',
+                commandBody: '\\IfBooleanTF{#1}{\\textbf{#2}}{\\emph{#2}}',
+            },
+        },
+        {
+            label: 'Token switch',
+            data: {
+                uiMode: 'expert',
+                mode: 'command',
+                action: 'new',
+                declaration: '\\NewDocumentCommand',
+                name: '\\smartref',
+                argSpec: 't+ m',
+                commandBody: '\\IfBooleanTF{#1}{\\autoref{#2}}{\\ref{#2}}',
+            },
+        },
+        {
+            label: 'Body-wrapping environment',
+            data: {
+                uiMode: 'expert',
+                mode: 'environment',
+                action: 'new',
+                declaration: '\\NewDocumentEnvironment',
+                name: 'callout',
+                argSpec: 'O{Note} b',
+                environmentBody: '\\par\\noindent\\textbf{#1}\\par\n#2',
+                environmentAfter: '\\par',
+            },
+        },
     ];
 
     const state = {
@@ -93,6 +173,7 @@
         zIndex: 100000,
         lastHref: window.location.href,
     };
+    let uniqueIdCounter = 0;
 
     function getProjectId() {
         const match = window.location.pathname.match(/\/project\/([^/]+)/);
@@ -122,8 +203,14 @@
         return `overleaf-floating-widget:${CONFIG.slug}:${getProjectStorageScope()}:${kind}`;
     }
 
+    function deepClone(value) {
+        return typeof structuredClone === 'function'
+            ? structuredClone(value)
+            : JSON.parse(JSON.stringify(value));
+    }
+
     function cloneDefaultData() {
-        return JSON.parse(JSON.stringify(CONFIG.defaultData));
+        return deepClone(CONFIG.defaultData);
     }
 
     function readJson(key, fallback) {
@@ -397,6 +484,20 @@
                 flex-direction: column;
                 gap: 8px;
             }
+            #${WIDGET_ID} .oncb-arg-list {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            #${WIDGET_ID} .oncb-arg-row {
+                gap: 10px;
+            }
+            #${WIDGET_ID} .oncb-arg-row-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+            }
             #${WIDGET_ID} .oncb-help {
                 margin: 0;
                 font-size: 0.75rem;
@@ -406,6 +507,12 @@
             #${WIDGET_ID} .oncb-help code {
                 font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
                 font-size: 0.72rem;
+            }
+            #${WIDGET_ID} .oncb-button[disabled],
+            #${WIDGET_ID} .oncb-token[disabled],
+            #${WIDGET_ID} .oncb-chip[disabled] {
+                opacity: 0.45;
+                cursor: not-allowed;
             }
         `;
         document.head.appendChild(style);
@@ -656,6 +763,86 @@
         return Math.min(Math.max(numeric, 0), 4);
     }
 
+    function createUniqueId(prefix = 'id') {
+        uniqueIdCounter = (uniqueIdCounter + 1) % GUIDED_ID_COUNTER_MODULUS;
+        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36).padStart(4, '0')}`;
+    }
+
+    function getLegacyOptionalArgumentKind(defaultValue) {
+        return String(defaultValue || '').trim() ? 'O' : 'o';
+    }
+
+    function getGuidedArgumentOptions(mode) {
+        return GUIDED_ARGUMENT_TYPES.filter(option => mode === 'environment' || !option.environmentOnly);
+    }
+
+    function getGuidedArgumentMeta(kind, mode = 'command') {
+        return getGuidedArgumentOptions(mode).find(option => option.value === kind) || getGuidedArgumentOptions(mode)[0];
+    }
+
+    function normalizeSingleCharacter(value, fallback) {
+        const text = String(value ?? '').trim();
+        return text ? text[0] : fallback;
+    }
+
+    function normalizeGuidedDefaultValue(value) {
+        return String(value ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeGuidedSpecDefaultValue(value) {
+        return normalizeGuidedDefaultValue(value).replace(/[{}]/g, match => `\\${match}`);
+    }
+
+    function getSuggestedGuidedLabel(kind, mode, index = 0) {
+        const meta = getGuidedArgumentMeta(kind, mode);
+        if (meta.defaultLabel === 'value') return `value ${index + 1}`;
+        return meta.defaultLabel;
+    }
+
+    function createGuidedArgument(kind = 'm', overrides = {}, mode = 'command', index = 0) {
+        const meta = getGuidedArgumentMeta(kind, mode);
+        return {
+            id: String(overrides.id || createUniqueId('arg')),
+            kind: meta.value,
+            label: String(overrides.label || getSuggestedGuidedLabel(meta.value, mode, index)),
+            defaultValue: normalizeGuidedDefaultValue(overrides.defaultValue),
+            token: normalizeSingleCharacter(overrides.token, meta.defaultToken || '+'),
+            open: normalizeSingleCharacter(overrides.open, meta.defaultOpen || '('),
+            close: normalizeSingleCharacter(overrides.close, meta.defaultClose || ')'),
+        };
+    }
+
+    function getLegacyGuidedArguments(source, mode) {
+        const items = [];
+        if (!source || typeof source !== 'object') return items;
+        if (source.hasOptionalArg) {
+            const defaultValue = String(source.optionalDefault || '');
+            items.push(createGuidedArgument(getLegacyOptionalArgumentKind(defaultValue), {
+                label: 'optional value',
+                defaultValue,
+            }, mode, items.length));
+        }
+        const requiredArgs = normalizeRequiredArgs(source.requiredArgs);
+        for (let index = 0; index < requiredArgs; index += 1) {
+            items.push(createGuidedArgument('m', { label: `value ${index + 1}` }, mode, items.length));
+        }
+        return items;
+    }
+
+    function normalizeGuidedArguments(rawArguments, mode, legacySource) {
+        const source = Array.isArray(rawArguments) ? rawArguments : getLegacyGuidedArguments(legacySource, mode);
+        const allowedKinds = new Set(getGuidedArgumentOptions(mode).map(option => option.value));
+        const seenIds = new Set();
+        return source.map((item, index) => {
+            const kind = allowedKinds.has(item?.kind) ? item.kind : 'm';
+            let id = String(item?.id || '');
+            if (!id || seenIds.has(id)) id = createUniqueId('arg');
+            const normalized = createGuidedArgument(kind, { ...(item || {}), id }, mode, index);
+            seenIds.add(normalized.id);
+            return normalized;
+        });
+    }
+
     function commentize(text, fallback) {
         const lines = String(text || '')
             .split(/\r?\n/)
@@ -665,55 +852,208 @@
         return source.map(line => `% ${line}`);
     }
 
+    function commentizeBlock(text) {
+        return String(text || '')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map(line => `% ${line}`);
+    }
+
+    function getGuidedArgumentLabel(argument, index, mode) {
+        const label = String(argument?.label || '').trim();
+        return label || getSuggestedGuidedLabel(argument?.kind || 'm', mode, index);
+    }
+
+    function buildGuidedArgumentSpecToken(argument) {
+        const open = normalizeSingleCharacter(argument.open, '(');
+        const close = normalizeSingleCharacter(argument.close, ')');
+        const defaultValue = escapeGuidedSpecDefaultValue(argument.defaultValue);
+        switch (argument.kind) {
+            case 'o':
+                return 'o';
+            case 'O':
+                return `O{${defaultValue}}`;
+            case 's':
+                return 's';
+            case 't':
+                return `t${normalizeSingleCharacter(argument.token, '+')}`;
+            case 'r':
+                return `r${open}${close}`;
+            case 'd':
+                return `d${open}${close}`;
+            case 'D':
+                return `D${open}${close}{${defaultValue}}`;
+            case 'v':
+                return 'v';
+            case 'b':
+                return 'b';
+            case 'm':
+            default:
+                return 'm';
+        }
+    }
+
     function buildGuidedArgSpec(data) {
-        const parts = [];
-        if (data.hasOptionalArg) {
-            const defaultValue = String(data.optionalDefault || '').trim();
-            parts.push(defaultValue ? `O{${defaultValue}}` : 'o');
-        }
-        for (let index = 0; index < normalizeRequiredArgs(data.requiredArgs); index += 1) {
-            parts.push('m');
-        }
-        return parts.join(' ');
+        return (data.guidedArguments || []).map(buildGuidedArgumentSpecToken).join(' ');
+    }
+
+    function getGuidedSpecWarnings(data) {
+        const warnings = [];
+        (data.guidedArguments || []).forEach((argument, index) => {
+            if ((argument.kind === 'O' || argument.kind === 'D') && /[{}]/.test(normalizeGuidedDefaultValue(argument.defaultValue))) {
+                warnings.push(`Argument ${index + 1}: braces in defaults were escaped in the generated xparse spec; verify the result.`);
+            }
+        });
+        return warnings;
     }
 
     function buildGuidedParameterNotes(data) {
         const notes = [];
-        let parameterIndex = 1;
-        if (data.hasOptionalArg) {
-            const defaultValue = String(data.optionalDefault || '').trim();
-            notes.push(defaultValue
-                ? `% #${parameterIndex} = optional input (defaults to "${defaultValue}")`
-                : `% #${parameterIndex} = optional input`);
-            parameterIndex += 1;
-        }
-        const requiredArgs = normalizeRequiredArgs(data.requiredArgs);
-        for (let index = 0; index < requiredArgs; index += 1) {
-            notes.push(`% #${parameterIndex} = required input ${index + 1}`);
-            parameterIndex += 1;
-        }
-        if (!notes.length) {
-            notes.push('% This definition takes no user inputs.');
-        }
+        const argumentsList = data.guidedArguments || [];
+        argumentsList.forEach((argument, index) => {
+            const position = index + 1;
+            const label = getGuidedArgumentLabel(argument, index, data.mode);
+            const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
+            const token = normalizeSingleCharacter(argument.token, '+');
+            const open = normalizeSingleCharacter(argument.open, '(');
+            const close = normalizeSingleCharacter(argument.close, ')');
+            switch (argument.kind) {
+                case 'o':
+                    notes.push(`% #${position} = optional ${label}`);
+                    break;
+                case 'O':
+                    notes.push(`% #${position} = optional ${label} (defaults to "${defaultValue}")`);
+                    break;
+                case 's':
+                    notes.push(`% #${position} = boolean for the optional star; test with \\IfBooleanTF{#${position}}{<starred>}{<plain>}`);
+                    break;
+                case 't':
+                    notes.push(`% #${position} = boolean for the literal token "${token}"; test with \\IfBooleanTF{#${position}}{<token present>}{<token absent>}`);
+                    break;
+                case 'r':
+                    notes.push(`% #${position} = required ${label} read between ${open} and ${close}`);
+                    break;
+                case 'd':
+                    notes.push(`% #${position} = optional ${label} read between ${open} and ${close}`);
+                    break;
+                case 'D':
+                    notes.push(`% #${position} = optional ${label} read between ${open} and ${close} (defaults to "${defaultValue}")`);
+                    break;
+                case 'v':
+                    notes.push(`% #${position} = verbatim ${label}`);
+                    break;
+                case 'b':
+                    notes.push(`% #${position} = environment body (${label})`);
+                    break;
+                case 'm':
+                default:
+                    notes.push(`% #${position} = required ${label}`);
+                    break;
+            }
+        });
+        if (!notes.length) notes.push('% This definition takes no user inputs.');
         return notes;
     }
 
+    function buildGuidedBooleanExamples(data) {
+        const lines = [];
+        (data.guidedArguments || []).forEach((argument, index) => {
+            const position = index + 1;
+            if (argument.kind === 's') {
+                lines.push(`% Boolean example for #${position}: \\IfBooleanTF{#${position}}{% handle the starred form}{% handle the plain form}`);
+            }
+            if (argument.kind === 't') {
+                const token = normalizeSingleCharacter(argument.token, '+');
+                lines.push(`% Boolean example for #${position}: \\IfBooleanTF{#${position}}{% handle the "${token}" form}{% handle the plain form}`);
+            }
+        });
+        return lines;
+    }
+
+    function buildGuidedUsageSegment(argument, index, mode) {
+        const label = getGuidedArgumentLabel(argument, index, mode);
+        const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
+        const token = normalizeSingleCharacter(argument.token, '+');
+        const open = normalizeSingleCharacter(argument.open, '(');
+        const close = normalizeSingleCharacter(argument.close, ')');
+        switch (argument.kind) {
+            case 'o':
+                return `[${label}]`;
+            case 'O':
+                return `[${defaultValue || label}]`;
+            case 's':
+                return '*';
+            case 't':
+                return token;
+            case 'r':
+                return `${open}${label}${close}`;
+            case 'd':
+                return `${open}${label}${close}`;
+            case 'D':
+                return `${open}${defaultValue || label}${close}`;
+            case 'v':
+                return `|${label}|`;
+            case 'b':
+                return '';
+            case 'm':
+            default:
+                return `{${label}}`;
+        }
+    }
+
     function buildGuidedUsageExample(data) {
-        const optionalPart = data.hasOptionalArg
-            ? `[${String(data.optionalDefault || '').trim() || 'optional'}]`
-            : '';
-        const requiredPart = Array.from({ length: normalizeRequiredArgs(data.requiredArgs) }, (_, index) => `{value${index + 1}}`).join('');
+        const argumentsList = data.guidedArguments || [];
+        const invocation = argumentsList
+            .map((argument, index) => buildGuidedUsageSegment(argument, index, data.mode))
+            .filter(Boolean)
+            .join('');
         if (data.mode === 'environment') {
             const envName = normalizeName(data.name, 'environment');
-            return `\\begin{${envName}}${optionalPart}${requiredPart}\n    % environment content\n\\end{${envName}}`;
+            const bodyArgumentIndex = argumentsList.findIndex(argument => argument.kind === 'b');
+            const bodyLabel = bodyArgumentIndex >= 0
+                ? getGuidedArgumentLabel(argumentsList[bodyArgumentIndex], bodyArgumentIndex, data.mode)
+                : 'environment content';
+            return `\\begin{${envName}}${invocation}\n    % ${bodyLabel}\n\\end{${envName}}`;
         }
-        return `${normalizeName(data.name, 'command')}${optionalPart}${requiredPart}`;
+        return `${normalizeName(data.name, 'command')}${invocation}`;
+    }
+
+    function buildGuidedUseCases(data) {
+        const kinds = new Set((data.guidedArguments || []).map(argument => argument.kind));
+        const notes = [];
+        if (!kinds.size) {
+            notes.push('No-argument definitions are useful for shorthands, wrappers, and reusable snippets.');
+        }
+        if (kinds.has('m') || kinds.has('r')) {
+            notes.push('Required inputs fit titles, text, labels, lengths, and other values that should always be provided.');
+        }
+        if (kinds.has('o') || kinds.has('O') || kinds.has('d') || kinds.has('D')) {
+            notes.push('Optional inputs keep the short call ergonomic while still allowing custom overrides when needed.');
+        }
+        if (kinds.has('s') || kinds.has('t')) {
+            notes.push('Boolean switches are great for starred/plain, compact/full, or strict/relaxed variants inside one definition.');
+        }
+        if (kinds.has('v')) {
+            notes.push('Verbatim inputs are handy for file paths, code fragments, URLs, and other text that should pass through untouched.');
+        }
+        if (kinds.has('b')) {
+            notes.push('Body capture lets an environment wrap or post-process the content placed between \\begin and \\end.');
+        }
+        if (!notes.length) {
+            notes.push('Guided mode is best when you want a starter template, usage example, and parameter notes without hand-writing xparse syntax.');
+        }
+        return notes;
     }
 
     function buildGuidedCommandBody(data) {
         return [
             ...commentize(data.commandPurpose, 'Goal: describe what the command should do.'),
+            '% Example call:',
+            ...commentizeBlock(buildGuidedUsageExample(data)),
             ...buildGuidedParameterNotes(data),
+            ...buildGuidedBooleanExamples(data),
+            '% Good fit when:',
+            ...buildGuidedUseCases(data).map(line => `% - ${line}`),
             '% Replace the comment block below with the LaTeX code you want to run.',
             '% TODO: write the command body here',
         ].join('\n');
@@ -722,7 +1062,12 @@
     function buildGuidedEnvironmentBody(data) {
         return [
             ...commentize(data.environmentStartDescription, 'Start behavior: describe what should happen when the environment begins.'),
+            '% Example call:',
+            ...commentizeBlock(buildGuidedUsageExample(data)),
             ...buildGuidedParameterNotes(data),
+            ...buildGuidedBooleanExamples(data),
+            '% Good fit when:',
+            ...buildGuidedUseCases(data).map(line => `% - ${line}`),
             '% Replace the comment block below with the LaTeX code that should run at \\begin.',
             '% TODO: write the begin code here',
         ].join('\n');
@@ -731,6 +1076,9 @@
     function buildGuidedEnvironmentAfter(data) {
         return [
             ...commentize(data.environmentEndDescription, 'End behavior: describe what should happen when the environment ends.'),
+            '% Example call:',
+            ...commentizeBlock(buildGuidedUsageExample(data)),
+            ...buildGuidedParameterNotes(data),
             '% Replace the comment block below with the LaTeX code that should run at \\end.',
             '% TODO: write the end code here',
         ].join('\n');
@@ -749,22 +1097,25 @@
     }
 
     function normalizeFormState(data) {
+        const raw = data && typeof data === 'object' ? data : {};
         const merged = {
             ...cloneDefaultData(),
-            ...data,
+            ...raw,
         };
         merged.uiMode = normalizeUiMode(merged.uiMode);
         merged.mode = merged.mode === 'environment' ? 'environment' : 'command';
         merged.action = normalizeAction(merged.mode, merged.action);
-        merged.requiredArgs = normalizeRequiredArgs(merged.requiredArgs);
-        merged.hasOptionalArg = Boolean(merged.hasOptionalArg);
-        merged.optionalDefault = String(merged.optionalDefault || '');
         merged.commandPurpose = String(merged.commandPurpose || '');
         merged.environmentStartDescription = String(merged.environmentStartDescription || '');
         merged.environmentEndDescription = String(merged.environmentEndDescription || '');
         merged.declaration = String(merged.declaration || getDeclarationOptions(merged.mode)[0]);
         merged.name = String(merged.name || (merged.mode === 'environment' ? 'myenvironment' : '\\mycommand'));
         merged.argSpec = String(merged.argSpec ?? '');
+        merged.guidedArguments = normalizeGuidedArguments(
+            Object.prototype.hasOwnProperty.call(raw, 'guidedArguments') ? raw.guidedArguments : null,
+            merged.mode,
+            raw,
+        );
         merged.commandBody = String(merged.commandBody || '% #1');
         merged.environmentBody = String(merged.environmentBody || '% begin code');
         merged.environmentAfter = String(merged.environmentAfter || '% end code');
@@ -799,26 +1150,35 @@
         const spec = String(data.argSpec || '').trim();
         if (data.uiMode === 'guided') {
             const actionDetails = getActionDetails(mode, data.action);
+            const specWarnings = getGuidedSpecWarnings(data);
             const notes = [
                 `Project: ${getProjectName()}`,
-                `Builder mode: Guided`,
+                'Builder mode: Guided',
                 `Declaration: ${actionDetails.declaration}`,
                 `Why this variant: ${actionDetails.help}`,
                 spec ? `Argument spec: ${spec}` : 'Argument spec: (none)',
                 `Example call:\n${buildGuidedUsageExample(data)}`,
+                `Parameter map:\n${buildGuidedParameterNotes(data).join('\n')}`,
+                `Use cases:\n${buildGuidedUseCases(data).map(line => `- ${line}`).join('\n')}`,
+                mode === 'environment'
+                    ? `Starter brief:\nAt \\begin: ${String(data.environmentStartDescription || '').trim() || 'Describe the setup behavior.'}\nAt \\end: ${String(data.environmentEndDescription || '').trim() || 'Describe the teardown behavior.'}`
+                    : `Starter brief:\n${String(data.commandPurpose || '').trim() || 'Describe what the command should do.'}`,
+                ...(specWarnings.length ? [`Spec warnings:\n${specWarnings.map(line => `- ${line}`).join('\n')}`] : []),
+                'Guided mode already generated a starter template with comments, usage hints, and boolean notes. Replace the comments with real LaTeX when ready.',
                 'Paste the generated declaration in your project preamble or in a .sty file that the project loads.',
             ];
             return notes.join('\n\n');
         }
         const notes = [
             `Project: ${getProjectName()}`,
-            `Builder mode: Expert`,
+            'Builder mode: Expert',
             mode === 'environment' ? `Environment name: ${bareName}` : `Command name: ${normalized}`,
             `Declaration: ${data.declaration}`,
             spec ? `Argument spec: ${spec}` : 'Argument spec: (none)',
             mode === 'environment'
                 ? `Usage:\n\\begin{${bareName}} ... \\end{${bareName}}`
                 : `Usage:\n${normalized}{...}`,
+            'Need richer examples, boolean helpers, or starter comments? Switch back to Guided mode and then return to Expert mode for final manual edits.',
         ];
         return notes.join('\n\n');
     }
@@ -834,19 +1194,12 @@
 
         const intro = document.createElement('p');
         intro.className = 'oncb-muted';
-        intro.textContent = 'Use Guided mode for plain-language prompts, or switch to Expert mode if you already know the xparse syntax you want.';
+        intro.textContent = 'Use Guided mode for structured xparse building with live examples and boolean helpers, or switch to Expert mode for full manual control.';
         body.appendChild(intro);
 
         const form = document.createElement('div');
         form.className = 'oncb-form';
         body.appendChild(form);
-
-        const setupCard = document.createElement('div');
-        setupCard.className = 'oncb-card';
-        const setupGrid = document.createElement('div');
-        setupGrid.className = 'oncb-grid';
-        setupCard.appendChild(setupGrid);
-        form.appendChild(setupCard);
 
         function createSelectField(labelText, options) {
             const field = document.createElement('label');
@@ -862,7 +1215,7 @@
                 select.appendChild(option);
             });
             field.append(label, select);
-            return { field, select };
+            return { field, label, select };
         }
 
         function createInputField(labelText, placeholder = '') {
@@ -874,7 +1227,7 @@
             input.className = 'oncb-input';
             input.placeholder = placeholder;
             field.append(label, input);
-            return { field, input };
+            return { field, label, input };
         }
 
         function createTextareaField(labelText) {
@@ -888,10 +1241,27 @@
             return { field, label, textarea };
         }
 
+        function createButton(text, className = 'oncb-button') {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = className;
+            button.textContent = text;
+            return button;
+        }
+
+        const setupCard = document.createElement('div');
+        setupCard.className = 'oncb-card';
+        const setupGrid = document.createElement('div');
+        setupGrid.className = 'oncb-grid';
+        setupCard.appendChild(setupGrid);
+        form.appendChild(setupCard);
+
         const editorModeField = createSelectField('Editor mode', [['guided', 'Guided'], ['expert', 'Expert']]);
         const modeField = createSelectField('Build', [['command', 'Command'], ['environment', 'Environment']]);
         const nameField = createInputField('Name');
-        setupGrid.append(editorModeField.field, modeField.field, nameField.field);
+        const argSpecPreviewField = createInputField('Live argument spec');
+        argSpecPreviewField.input.readOnly = true;
+        setupGrid.append(editorModeField.field, modeField.field, nameField.field, argSpecPreviewField.field);
 
         const guidedCard = document.createElement('div');
         guidedCard.className = 'oncb-card';
@@ -899,7 +1269,7 @@
 
         const guidedIntro = document.createElement('p');
         guidedIntro.className = 'oncb-help';
-        guidedIntro.textContent = 'Answer a few plain-language questions and the builder will choose the declaration form, argument spec, and starter template for you.';
+        guidedIntro.textContent = 'Add arguments in the exact order you want them to appear. Guided mode covers required inputs, optional defaults, boolean star/token switches, delimiters, verbatim values, and environment body capture.';
         guidedCard.appendChild(guidedIntro);
 
         const guidedGrid = document.createElement('div');
@@ -909,23 +1279,30 @@
         const actionField = createSelectField('What do you want to do?', []);
         const declarationPreviewField = createInputField('Builder will use');
         declarationPreviewField.input.readOnly = true;
-        const requiredArgsField = createSelectField('How many required inputs?', [['0', '0'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']]);
-        const optionalArgField = createSelectField('Add an optional first input?', [['false', 'No'], ['true', 'Yes']]);
-        const optionalDefaultField = createInputField('Optional default value', 'leave blank for a plain optional input');
-        const argSpecPreviewField = createInputField('Generated argument spec');
-        argSpecPreviewField.input.readOnly = true;
-        guidedGrid.append(
-            actionField.field,
-            declarationPreviewField.field,
-            requiredArgsField.field,
-            optionalArgField.field,
-            optionalDefaultField.field,
-            argSpecPreviewField.field,
-        );
+        guidedGrid.append(actionField.field, declarationPreviewField.field);
 
         const actionHelp = document.createElement('p');
         actionHelp.className = 'oncb-help';
         guidedCard.appendChild(actionHelp);
+
+        const guidedArgsCard = document.createElement('div');
+        guidedArgsCard.className = 'oncb-card';
+        const guidedArgsTitle = document.createElement('p');
+        guidedArgsTitle.className = 'oncb-muted';
+        guidedArgsTitle.textContent = 'Guided arguments';
+        const guidedArgsList = document.createElement('div');
+        guidedArgsList.className = 'oncb-arg-list';
+        const guidedArgButtons = document.createElement('div');
+        guidedArgButtons.className = 'oncb-actions';
+        const guidedUseCases = document.createElement('p');
+        guidedUseCases.className = 'oncb-help';
+        guidedArgsCard.append(guidedArgsTitle, guidedArgsList, guidedArgButtons, guidedUseCases);
+        guidedCard.appendChild(guidedArgsCard);
+
+        const guidedExampleField = createTextareaField('Live example call');
+        guidedExampleField.textarea.readOnly = true;
+        guidedExampleField.textarea.style.minHeight = '90px';
+        guidedCard.appendChild(guidedExampleField.field);
 
         const guidedCommandField = createTextareaField('What should the command do?');
         guidedCommandField.textarea.placeholder = 'Example: Make the text bold and prefix it with “Remark:”.';
@@ -945,7 +1322,7 @@
 
         const expertIntro = document.createElement('p');
         expertIntro.className = 'oncb-help';
-        expertIntro.textContent = 'Expert mode exposes the raw declaration, argument spec, and body fields directly.';
+        expertIntro.textContent = 'Expert mode exposes raw declarations, argument specs, and body fields directly. The shortcuts below cover common xparse patterns, including booleans and delimited/defaulted forms.';
         expertCard.appendChild(expertIntro);
 
         const expertGrid = document.createElement('div');
@@ -979,6 +1356,7 @@
         snippetTitle.textContent = 'Generated declaration';
         const snippetOutput = document.createElement('textarea');
         snippetOutput.className = 'oncb-input oncb-output';
+        snippetOutput.readOnly = true;
         snippetCard.append(snippetTitle, snippetOutput);
         body.appendChild(snippetCard);
 
@@ -989,24 +1367,16 @@
         notesTitle.textContent = 'Usage notes';
         const notesOutput = document.createElement('textarea');
         notesOutput.className = 'oncb-input';
-        notesOutput.style.minHeight = '140px';
+        notesOutput.style.minHeight = '180px';
+        notesOutput.readOnly = true;
         notesCard.append(notesTitle, notesOutput);
         body.appendChild(notesCard);
 
         const actions = document.createElement('div');
         actions.className = 'oncb-actions';
-        const copySnippetButton = document.createElement('button');
-        copySnippetButton.type = 'button';
-        copySnippetButton.className = 'oncb-button';
-        copySnippetButton.textContent = 'Copy declaration';
-        const copyNotesButton = document.createElement('button');
-        copyNotesButton.type = 'button';
-        copyNotesButton.className = 'oncb-button';
-        copyNotesButton.textContent = 'Copy usage notes';
-        const resetButton = document.createElement('button');
-        resetButton.type = 'button';
-        resetButton.className = 'oncb-button';
-        resetButton.textContent = 'Reset draft';
+        const copySnippetButton = createButton('Copy declaration');
+        const copyNotesButton = createButton('Copy usage notes');
+        const resetButton = createButton('Reset draft');
         actions.append(copySnippetButton, copyNotesButton, resetButton);
         body.appendChild(actions);
 
@@ -1038,18 +1408,184 @@
             });
         }
 
-        function refreshOutputs() {
+        function applyPreset(preset) {
+            Object.assign(formState, normalizeFormState({
+                ...cloneDefaultData(),
+                ...deepClone(preset.data),
+            }));
+            refreshOutputs({ rerenderArguments: true });
+        }
+
+        function moveGuidedArgument(index, direction) {
+            const nextIndex = index + direction;
+            if (nextIndex < 0 || nextIndex >= formState.guidedArguments.length) return;
+            const swapped = formState.guidedArguments[index];
+            formState.guidedArguments[index] = formState.guidedArguments[nextIndex];
+            formState.guidedArguments[nextIndex] = swapped;
+            refreshOutputs({ rerenderArguments: true });
+        }
+
+        function renderGuidedArguments() {
+            guidedArgsList.textContent = '';
+            guidedArgButtons.textContent = '';
+            const options = getGuidedArgumentOptions(formState.mode);
+            const optionPairs = options.map(option => [option.value, option.label]);
+            const canAddMore = formState.guidedArguments.length < GUIDED_ARGUMENT_LIMIT;
+
+            if (!formState.guidedArguments.length) {
+                const empty = document.createElement('p');
+                empty.className = 'oncb-help';
+                empty.textContent = 'No guided arguments yet. Add one below if you want inputs, switches, delimiters, or body capture.';
+                guidedArgsList.appendChild(empty);
+            }
+
+            formState.guidedArguments.forEach((argument, index) => {
+                const meta = getGuidedArgumentMeta(argument.kind, formState.mode);
+                const row = document.createElement('div');
+                row.className = 'oncb-card oncb-arg-row';
+
+                const header = document.createElement('div');
+                header.className = 'oncb-arg-row-header';
+                const title = document.createElement('p');
+                title.className = 'oncb-muted';
+                title.textContent = `Argument ${index + 1}`;
+                const controls = document.createElement('div');
+                controls.className = 'oncb-actions';
+                const moveUp = createButton('↑');
+                const moveDown = createButton('↓');
+                const remove = createButton('Remove');
+                moveUp.disabled = index === 0;
+                moveDown.disabled = index === formState.guidedArguments.length - 1;
+                moveUp.addEventListener('click', () => moveGuidedArgument(index, -1));
+                moveDown.addEventListener('click', () => moveGuidedArgument(index, 1));
+                remove.addEventListener('click', () => {
+                    formState.guidedArguments.splice(index, 1);
+                    refreshOutputs({ rerenderArguments: true });
+                });
+                controls.append(moveUp, moveDown, remove);
+                header.append(title, controls);
+                row.appendChild(header);
+
+                const fields = document.createElement('div');
+                fields.className = 'oncb-grid';
+                const typeField = createSelectField('Type', optionPairs);
+                typeField.select.value = argument.kind;
+                fields.appendChild(typeField.field);
+
+                const labelField = createInputField('Label / example', meta.example || 'value');
+                labelField.input.value = getGuidedArgumentLabel(argument, index, formState.mode);
+                fields.appendChild(labelField.field);
+
+                let tokenField = null;
+                let defaultField = null;
+                let openField = null;
+                let closeField = null;
+
+                if (meta.supportsToken) {
+                    tokenField = createInputField('Trigger token', meta.defaultToken || '+');
+                    tokenField.input.maxLength = 1;
+                    tokenField.input.value = normalizeSingleCharacter(argument.token, meta.defaultToken || '+');
+                    fields.appendChild(tokenField.field);
+                }
+
+                if (meta.supportsDefault) {
+                    defaultField = createInputField('Default value', 'default');
+                    defaultField.input.value = String(argument.defaultValue || '');
+                    fields.appendChild(defaultField.field);
+                }
+
+                if (meta.supportsDelimiters) {
+                    openField = createInputField('Open delimiter', meta.defaultOpen || '(');
+                    closeField = createInputField('Close delimiter', meta.defaultClose || ')');
+                    openField.input.maxLength = 1;
+                    closeField.input.maxLength = 1;
+                    openField.input.value = normalizeSingleCharacter(argument.open, meta.defaultOpen || '(');
+                    closeField.input.value = normalizeSingleCharacter(argument.close, meta.defaultClose || ')');
+                    fields.append(openField.field, closeField.field);
+                }
+
+                row.appendChild(fields);
+
+                const help = document.createElement('p');
+                help.className = 'oncb-help';
+                help.textContent = `${meta.help} Example syntax: ${buildGuidedUsageSegment(argument, index, formState.mode) || meta.example}.`;
+                row.appendChild(help);
+                guidedArgsList.appendChild(row);
+
+                typeField.select.addEventListener('change', () => {
+                    const currentArgument = formState.guidedArguments[index];
+                    formState.guidedArguments[index] = createGuidedArgument(typeField.select.value, {
+                        ...currentArgument,
+                        id: currentArgument.id,
+                        label: labelField.input.value,
+                        defaultValue: defaultField?.input.value,
+                        token: tokenField?.input.value,
+                        open: openField?.input.value,
+                        close: closeField?.input.value,
+                    }, formState.mode, index);
+                    refreshOutputs({ rerenderArguments: true });
+                });
+
+                labelField.input.addEventListener('input', () => {
+                    formState.guidedArguments[index].label = labelField.input.value;
+                    refreshOutputs();
+                });
+
+                tokenField?.input.addEventListener('input', () => {
+                    const normalized = normalizeSingleCharacter(tokenField.input.value, meta.defaultToken || '+');
+                    tokenField.input.value = normalized;
+                    formState.guidedArguments[index].token = normalized;
+                    refreshOutputs();
+                });
+
+                defaultField?.input.addEventListener('input', () => {
+                    formState.guidedArguments[index].defaultValue = normalizeGuidedDefaultValue(defaultField.input.value);
+                    refreshOutputs();
+                });
+
+                openField?.input.addEventListener('input', () => {
+                    const normalized = normalizeSingleCharacter(openField.input.value, meta.defaultOpen || '(');
+                    openField.input.value = normalized;
+                    formState.guidedArguments[index].open = normalized;
+                    refreshOutputs();
+                });
+
+                closeField?.input.addEventListener('input', () => {
+                    const normalized = normalizeSingleCharacter(closeField.input.value, meta.defaultClose || ')');
+                    closeField.input.value = normalized;
+                    formState.guidedArguments[index].close = normalized;
+                    refreshOutputs();
+                });
+            });
+
+            options.forEach(option => {
+                const button = createButton(`+ ${option.shortLabel}`, 'oncb-chip');
+                button.disabled = !canAddMore;
+                button.title = canAddMore
+                    ? option.help
+                    : `Limit reached (${GUIDED_ARGUMENT_LIMIT}). Remove an argument before adding another.`;
+                button.addEventListener('click', () => {
+                    if (!canAddMore) return;
+                    formState.guidedArguments.push(createGuidedArgument(option.value, {}, formState.mode, formState.guidedArguments.length));
+                    refreshOutputs({ rerenderArguments: true });
+                });
+                guidedArgButtons.appendChild(button);
+            });
+        }
+
+        function refreshOutputs(options = {}) {
+            const { rerenderArguments = false } = options;
             formState.uiMode = normalizeUiMode(formState.uiMode);
             formState.mode = formState.mode === 'environment' ? 'environment' : 'command';
             formState.action = normalizeAction(formState.mode, formState.action);
-            formState.requiredArgs = normalizeRequiredArgs(formState.requiredArgs);
-            formState.hasOptionalArg = Boolean(formState.hasOptionalArg);
+            formState.guidedArguments = normalizeGuidedArguments(formState.guidedArguments, formState.mode, formState);
             if (formState.uiMode === 'guided') {
                 syncGuidedFields(formState);
             }
 
             syncActionOptions();
             syncDeclarationOptions();
+            if (rerenderArguments) renderGuidedArguments();
 
             const isEnvironment = formState.mode === 'environment';
             const actionDetails = getActionDetails(formState.mode, formState.action);
@@ -1058,18 +1594,16 @@
             modeField.select.value = formState.mode;
             nameField.input.placeholder = isEnvironment ? 'myenvironment' : '\\mycommand';
             nameField.input.value = formState.name;
+            argSpecPreviewField.input.value = formState.argSpec || '(none)';
 
             guidedCard.hidden = formState.uiMode !== 'guided';
             expertCard.hidden = formState.uiMode !== 'expert';
 
             actionField.select.value = formState.action;
             declarationPreviewField.input.value = actionDetails.declaration;
-            requiredArgsField.select.value = String(formState.requiredArgs);
-            optionalArgField.select.value = String(formState.hasOptionalArg);
-            optionalDefaultField.field.hidden = !formState.hasOptionalArg;
-            optionalDefaultField.input.value = formState.optionalDefault;
-            argSpecPreviewField.input.value = formState.argSpec || '(none)';
             actionHelp.textContent = actionDetails.help;
+            guidedUseCases.textContent = `Use cases: ${buildGuidedUseCases(formState).join(' ')}`;
+            guidedExampleField.textarea.value = buildGuidedUsageExample(formState);
 
             guidedCommandField.field.hidden = isEnvironment;
             guidedBeginField.field.hidden = !isEnvironment;
@@ -1088,7 +1622,9 @@
             snippetOutput.value = buildSnippet(formState);
             notesOutput.value = buildUsageNotes(formState);
             writeData(formState);
-            setFooterText(widget, `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`);
+            const specWarnings = getGuidedSpecWarnings(formState);
+            const footerBase = `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`;
+            setFooterText(widget, specWarnings.length ? `${footerBase} · ${specWarnings[0]}` : footerBase);
         }
 
         editorModeField.select.addEventListener('change', () => {
@@ -1104,7 +1640,7 @@
             if (!String(formState.name || '').trim() || formState.name === defaultPreviousName) {
                 formState.name = formState.mode === 'environment' ? 'myenvironment' : '\\mycommand';
             }
-            refreshOutputs();
+            refreshOutputs({ rerenderArguments: true });
         });
 
         nameField.input.addEventListener('input', () => {
@@ -1114,21 +1650,6 @@
 
         actionField.select.addEventListener('change', () => {
             formState.action = actionField.select.value;
-            refreshOutputs();
-        });
-
-        requiredArgsField.select.addEventListener('change', () => {
-            formState.requiredArgs = Number(requiredArgsField.select.value);
-            refreshOutputs();
-        });
-
-        optionalArgField.select.addEventListener('change', () => {
-            formState.hasOptionalArg = optionalArgField.select.value === 'true';
-            refreshOutputs();
-        });
-
-        optionalDefaultField.input.addEventListener('input', () => {
-            formState.optionalDefault = optionalDefaultField.input.value;
             refreshOutputs();
         });
 
@@ -1184,19 +1705,12 @@
             tokenRow.appendChild(button);
         });
 
-        [
-            ['Zero-arg command', { uiMode: 'expert', mode: 'command', declaration: '\\NewDocumentCommand', name: '\\alertbox', argSpec: '', commandBody: '\\textbf{Alert}', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Optional argument command', { uiMode: 'expert', mode: 'command', declaration: '\\NewDocumentCommand', name: '\\todoitem', argSpec: 'O{TODO} m', commandBody: '\\textbf{#1}: #2', environmentBody: formState.environmentBody, environmentAfter: formState.environmentAfter }],
-            ['Simple environment', { uiMode: 'expert', mode: 'environment', declaration: '\\NewDocumentEnvironment', name: 'infobox', argSpec: 'm', commandBody: formState.commandBody, environmentBody: '\\par\\noindent\\textbf{#1}\\par', environmentAfter: '\\par' }],
-        ].forEach(([label, preset]) => {
+        EXAMPLE_PRESETS.forEach(preset => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'oncb-chip';
-            button.textContent = label;
-            button.addEventListener('click', () => {
-                Object.assign(formState, preset);
-                refreshOutputs();
-            });
+            button.textContent = preset.label;
+            button.addEventListener('click', () => applyPreset(preset));
             actions.prepend(button);
         });
 
@@ -1212,9 +1726,10 @@
 
         resetButton.addEventListener('click', () => {
             Object.assign(formState, normalizeFormState(cloneDefaultData()));
-            refreshOutputs();
+            refreshOutputs({ rerenderArguments: true });
         });
 
+        renderGuidedArguments();
         refreshOutputs();
     }
 
