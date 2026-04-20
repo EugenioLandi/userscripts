@@ -172,6 +172,7 @@
         zIndex: 100000,
         lastHref: window.location.href,
     };
+    let uniqueIdCounter = 0;
 
     function getProjectId() {
         const match = window.location.pathname.match(/\/project\/([^/]+)/);
@@ -756,7 +757,8 @@
     }
 
     function createUniqueId(prefix = 'id') {
-        return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        uniqueIdCounter += 1;
+        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     }
 
     function getGuidedArgumentOptions(mode) {
@@ -814,8 +816,9 @@
         const seenIds = new Set();
         return source.map((item, index) => {
             const kind = allowedKinds.has(item?.kind) ? item.kind : 'm';
-            const normalized = createGuidedArgument(kind, item || {}, mode, index);
-            if (seenIds.has(normalized.id)) normalized.id = createUniqueId('arg');
+            let id = String(item?.id || '');
+            if (!id || seenIds.has(id)) id = createUniqueId('arg');
+            const normalized = createGuidedArgument(kind, { ...(item || {}), id }, mode, index);
             seenIds.add(normalized.id);
             return normalized;
         });
@@ -1479,8 +1482,10 @@
                 guidedArgsList.appendChild(row);
 
                 typeField.select.addEventListener('change', () => {
+                    const currentArgument = formState.guidedArguments[index] || argument;
                     formState.guidedArguments[index] = createGuidedArgument(typeField.select.value, {
-                        id: argument.id,
+                        ...currentArgument,
+                        id: currentArgument.id,
                         label: labelField.input.value,
                         defaultValue: defaultField?.input.value,
                         token: tokenField?.input.value,
