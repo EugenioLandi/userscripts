@@ -786,7 +786,11 @@
     }
 
     function normalizeGuidedDefaultValue(value) {
-        return String(value ?? '').replace(/\s*\r?\n\s*/g, ' ').trim();
+        return String(value ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeGuidedSpecDefaultValue(value) {
+        return normalizeGuidedDefaultValue(value).replace(/[{}]/g, match => `\\${match}`);
     }
 
     function getSuggestedGuidedLabel(kind, mode, index = 0) {
@@ -863,7 +867,7 @@
     function buildGuidedArgumentSpecToken(argument) {
         const open = normalizeSingleCharacter(argument.open, '(');
         const close = normalizeSingleCharacter(argument.close, ')');
-        const defaultValue = normalizeGuidedDefaultValue(argument.defaultValue);
+        const defaultValue = escapeGuidedSpecDefaultValue(argument.defaultValue);
         switch (argument.kind) {
             case 'o':
                 return 'o';
@@ -897,7 +901,7 @@
         const warnings = [];
         (data.guidedArguments || []).forEach((argument, index) => {
             if ((argument.kind === 'O' || argument.kind === 'D') && /[{}]/.test(normalizeGuidedDefaultValue(argument.defaultValue))) {
-                warnings.push(`Argument ${index + 1}: defaults containing { or } can break the generated xparse spec.`);
+                warnings.push(`Argument ${index + 1}: braces in defaults were escaped in the generated xparse spec; verify the result.`);
             }
         });
         return warnings;
@@ -1619,9 +1623,8 @@
             notesOutput.value = buildUsageNotes(formState);
             writeData(formState);
             const specWarnings = getGuidedSpecWarnings(formState);
-            setFooterText(widget, specWarnings.length
-                ? `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()} · ${specWarnings[0]}`
-                : `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`);
+            const footerBase = `${formState.uiMode === 'guided' ? 'Guided' : 'Expert'} ${isEnvironment ? 'environment' : 'command'} draft saved locally for ${getProjectName()}`;
+            setFooterText(widget, specWarnings.length ? `${footerBase} · ${specWarnings[0]}` : footerBase);
         }
 
         editorModeField.select.addEventListener('change', () => {
