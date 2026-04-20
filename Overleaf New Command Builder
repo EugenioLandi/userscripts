@@ -203,7 +203,9 @@
     }
 
     function cloneDefaultData() {
-        return JSON.parse(JSON.stringify(CONFIG.defaultData));
+        return typeof structuredClone === 'function'
+            ? structuredClone(CONFIG.defaultData)
+            : JSON.parse(JSON.stringify(CONFIG.defaultData));
     }
 
     function readJson(key, fallback) {
@@ -758,7 +760,7 @@
 
     function createUniqueId(prefix = 'id') {
         uniqueIdCounter += 1;
-        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        return `${prefix}-${Date.now().toString(36)}-${uniqueIdCounter.toString(36)}`;
     }
 
     function getGuidedArgumentOptions(mode) {
@@ -1083,7 +1085,7 @@
         merged.name = String(merged.name || (merged.mode === 'environment' ? 'myenvironment' : '\\mycommand'));
         merged.argSpec = String(merged.argSpec ?? '');
         merged.guidedArguments = normalizeGuidedArguments(
-            Object.prototype.hasOwnProperty.call(raw, 'guidedArguments') ? raw.guidedArguments : null,
+            Object.hasOwn(raw, 'guidedArguments') ? raw.guidedArguments : null,
             merged.mode,
             raw,
         );
@@ -1380,7 +1382,7 @@
         function applyPreset(preset) {
             Object.assign(formState, normalizeFormState({
                 ...cloneDefaultData(),
-                ...JSON.parse(JSON.stringify(preset.data)),
+                ...(typeof structuredClone === 'function' ? structuredClone(preset.data) : JSON.parse(JSON.stringify(preset.data))),
             }));
             refreshOutputs({ rerenderArguments: true });
         }
@@ -1482,7 +1484,7 @@
                 guidedArgsList.appendChild(row);
 
                 typeField.select.addEventListener('change', () => {
-                    const currentArgument = formState.guidedArguments[index] || argument;
+                    const currentArgument = formState.guidedArguments[index];
                     formState.guidedArguments[index] = createGuidedArgument(typeField.select.value, {
                         ...currentArgument,
                         id: currentArgument.id,
