@@ -32,9 +32,9 @@
 
 
 ## Overleaf GitHub Shortcut
-- **Current issues:** accessing the GitHub integration requires opening Overleaf menus even when the PDF toolbar is already visible.
-- **Fixes:** added a dedicated toolbar shortcut, retries multiple likely menu triggers, and restores explicit clickable toolbar behavior for the custom control.
-- **New functionality:** compact GitHub emoji shortcut beside the PDF/ZIP controls with inline status feedback when the integration action cannot be found yet.
+- **Current issues:** Overleaf mounts the GitHub integration entry lazily, so one-shot clicks can miss it until the menu has been opened once.
+- **Fixes:** added a dedicated toolbar shortcut, broadened menu activation to click/pointer/keyboard flows, waits for the GitHub action to appear after opening candidate menus, and restores explicit clickable toolbar behavior for the custom control.
+- **New functionality:** compact GitHub shortcut beside the PDF/ZIP controls with inline status feedback and a safer project-settings fallback when Overleaf changes the integration entry point.
 
 ## Wikipedia Mobile to Desktop redirect
 - **Current issues:** hostname replacement was overly simplistic and offered no way to stay on mobile when needed.
