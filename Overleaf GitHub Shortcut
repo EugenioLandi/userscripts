@@ -19,6 +19,8 @@
 
     const BUTTON_CLASS = 'custom-github-shortcut-btn';
     const STATUS_ID = 'custom-github-shortcut-status';
+    const KEYBOARD_ACTIVATION_KEYS = ['Enter', ' '];
+    const INITIAL_TARGET_WAIT_TIMEOUT_MS = 250;
     const TARGET_POLL_INTERVAL_MS = 125;
     const TARGET_WAIT_TIMEOUT_MS = 1750;
 
@@ -240,8 +242,7 @@
         const strategies = [
             () => triggerClick(menuTrigger),
             () => triggerPointerActivation(menuTrigger),
-            () => triggerKeyboardActivation(menuTrigger, 'Enter'),
-            () => triggerKeyboardActivation(menuTrigger, ' '),
+            ...KEYBOARD_ACTIVATION_KEYS.map(key => () => triggerKeyboardActivation(menuTrigger, key)),
         ];
 
         for (const strategy of strategies) {
@@ -275,7 +276,7 @@
     async function openGitHubIntegration(shortcutButton) {
         setStatus(shortcutButton, 'Opening GitHub…');
 
-        let target = await waitForGitHubTarget(250);
+        let target = await waitForGitHubTarget(INITIAL_TARGET_WAIT_TIMEOUT_MS);
         if (target) {
             activateTarget(target);
             setStatus(shortcutButton, 'Opened GitHub integration');
