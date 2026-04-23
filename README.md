@@ -138,7 +138,7 @@ If you want a manual refresh:
 - **Site:** Wikipedia mobile pages.
 - **Purpose:** redirects mobile Wikipedia URLs to the desktop site.
 
-#### arXiv PDF Downloader with Custom Filenam
+#### arXiv PDF Downloader with Custom Filename
 - **Site:** arXiv.
 - **Purpose:** downloads PDFs with a more useful custom filename format.
 
