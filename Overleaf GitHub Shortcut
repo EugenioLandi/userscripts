@@ -200,18 +200,24 @@
         return true;
     }
 
+    function getKeyboardEventCode(key) {
+        if (key === ' ') return 'Space';
+        if (key === 'Enter') return 'Enter';
+        return key;
+    }
+
     function triggerKeyboardActivation(element, key) {
         if (!element) return false;
         element.focus?.({ preventScroll: true });
         element.dispatchEvent(new KeyboardEvent('keydown', {
             key,
-            code: key === ' ' ? 'Space' : key,
+            code: getKeyboardEventCode(key),
             bubbles: true,
             cancelable: true,
         }));
         element.dispatchEvent(new KeyboardEvent('keyup', {
             key,
-            code: key === ' ' ? 'Space' : key,
+            code: getKeyboardEventCode(key),
             bubbles: true,
             cancelable: true,
         }));

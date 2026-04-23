@@ -116,7 +116,7 @@ If you want a manual refresh:
 - **Purpose:** surfaces Copilot usage details directly on GitHub pages.
 - **Best for:** quickly checking personal usage without extra navigation.
 
-#### github copilot model multiplier
+#### GitHub Copilot Model Multiplier
 - **Site:** GitHub Copilot pages.
 - **Purpose:** helps interpret Copilot request costs across models.
 - **Best for:** understanding effective usage impact when switching models.
