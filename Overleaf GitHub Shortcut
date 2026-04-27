@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf GitHub Shortcut
 // @namespace    http://tampermonkey.net/
-// @version      1.3.2
+// @version      1.3.3
 // @description  Add a GitHub integration shortcut next to the PDF/ZIP controls in Overleaf
 // @author       You
 // @match        https://*.overleaf.com/*
@@ -21,6 +21,11 @@
     const STATUS_ID = 'custom-github-shortcut-status';
     const KEYBOARD_ACTIVATION_KEYS = ['Enter', ' '];
     const INITIAL_TARGET_WAIT_TIMEOUT_MS = 250;
+    const PDF_BUTTON_SELECTORS = [
+        'a[aria-label="Download PDF"]',
+        'button[aria-label="Download PDF"]',
+        '[role="button"][aria-label="Download PDF"]',
+    ];
     const TARGET_POLL_INTERVAL_MS = 125;
     const TARGET_WAIT_TIMEOUT_MS = 1750;
 
@@ -35,7 +40,9 @@
     }
 
     function getPdfButton() {
-        return document.querySelector('a[aria-label="Download PDF"]');
+        return PDF_BUTTON_SELECTORS
+            .map(selector => document.querySelector(selector))
+            .find(Boolean) || null;
     }
 
     function getZipButton() {
