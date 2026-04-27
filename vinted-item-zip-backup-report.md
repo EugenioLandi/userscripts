@@ -201,6 +201,7 @@ The userscript does **not** bypass permissions, authentication rules, or hidden 
 The repository does not use a central build system for userscripts. Validation for this addition follows the existing repository pattern:
 
 - syntax-check the script with `node --check "/absolute/path/to/script"`
+- from the repository root, the concrete example is `node --check "Vinted Item ZIP Backup"`
 
 ## Maintenance notes
 
