@@ -134,6 +134,14 @@ If you want a manual refresh:
 - **Site:** Reddit.
 - **Purpose:** restores a more classic Reddit experience.
 
+### Vinted
+
+#### Vinted Item ZIP Backup
+- **Site:** Vinted item pages.
+- **Purpose:** saves the current item page as a ZIP archive with photos, normalized metadata, raw structured data, and a page snapshot.
+- **Best for:** keeping a portable offline record of a listing before it changes or disappears.
+- **Detailed notes:** see `/vinted-item-zip-backup-report.md`.
+
 #### Wikipedia Mobile to Desktop redirect
 - **Site:** Wikipedia mobile pages.
 - **Purpose:** redirects mobile Wikipedia URLs to the desktop site.

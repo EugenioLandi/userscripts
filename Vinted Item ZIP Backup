@@ -1,0 +1,938 @@
+// ==UserScript==
+// @name         Vinted Item ZIP Backup
+// @namespace    https://www.vinted.com/
+// @version      1.0.0
+// @description  Save the current Vinted item page as a ZIP with photos, metadata, structured data, and a page snapshot
+// @match        https://www.vinted.*/*
+// @match        https://*.vinted.*/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Vinted%20Item%20ZIP%20Backup
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Vinted%20Item%20ZIP%20Backup
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      *
+// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__vintedItemZipBackupInitialized) return;
+    window.__vintedItemZipBackupInitialized = true;
+
+    const PANEL_ID = 'vinted-item-zip-backup-panel';
+    const STYLE_ID = 'vinted-item-zip-backup-style';
+    const BUTTON_ID = 'vinted-item-zip-backup-button';
+    const STATUS_ID = 'vinted-item-zip-backup-status';
+    const TITLE_ID = 'vinted-item-zip-backup-title';
+    const SNAPSHOT_VERSION = '1.0.0';
+    const state = {
+        busy: false,
+        lastUrl: '',
+        statusTimer: 0,
+    };
+
+    function isItemPage() {
+        return /\/items\/\d+/.test(window.location.pathname);
+    }
+
+    function getItemId() {
+        const match = window.location.pathname.match(/\/items\/(\d+)/);
+        return match ? match[1] : '';
+    }
+
+    function cleanText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function sanitizeFilenamePart(value) {
+        return cleanText(value)
+            .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\.+$/g, '');
+    }
+
+    function truncate(value, maxLength = 180) {
+        return value.length > maxLength ? value.slice(0, maxLength).trim() : value;
+    }
+
+    function uniqueStrings(values) {
+        const seen = new Set();
+        const result = [];
+        for (const value of values) {
+            const cleaned = cleanText(value);
+            if (!cleaned) continue;
+            const key = cleaned.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            result.push(cleaned);
+        }
+        return result;
+    }
+
+    function safeJsonParse(text) {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return null;
+        }
+    }
+
+    function prettyJson(value) {
+        return JSON.stringify(value, null, 2);
+    }
+
+    function getTimestamp() {
+        const date = new Date();
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
+    }
+
+    function buildArchiveName(item) {
+        const parts = [
+            sanitizeFilenamePart(item.title || item.metaTitle || `vinted-item-${item.itemId || 'snapshot'}`),
+            sanitizeFilenamePart(item.itemId),
+            getTimestamp(),
+        ].filter(Boolean);
+        return truncate(parts.join(' - ') || 'vinted-item-snapshot', 200);
+    }
+
+    function textFromSelectors(selectors, root = document) {
+        for (const selector of selectors) {
+            const element = root.querySelector(selector);
+            const value = cleanText(element?.textContent || element?.value || '');
+            if (value) return value;
+        }
+        return '';
+    }
+
+    function hrefFromSelectors(selectors, root = document) {
+        for (const selector of selectors) {
+            const element = root.querySelector(selector);
+            const href = element?.getAttribute?.('href');
+            if (href) return new URL(href, window.location.origin).toString();
+        }
+        return '';
+    }
+
+    function contentFromMeta(key, attr = 'property') {
+        return cleanText(document.querySelector(`meta[${attr}="${key}"]`)?.getAttribute('content') || '');
+    }
+
+    function normalizeUrl(url) {
+        if (!url || typeof url !== 'string') return '';
+        try {
+            return new URL(url, window.location.href).toString();
+        } catch {
+            return '';
+        }
+    }
+
+    function looksLikeImageUrl(value) {
+        if (!value || typeof value !== 'string') return false;
+        return /^https?:\/\//i.test(value) || value.startsWith('//');
+    }
+
+    function normalizeImageCandidates(value, results = []) {
+        if (!value) return results;
+
+        if (typeof value === 'string') {
+            const url = normalizeUrl(value);
+            if (url && looksLikeImageUrl(url)) results.push(url);
+            return results;
+        }
+
+        if (Array.isArray(value)) {
+            for (const entry of value) normalizeImageCandidates(entry, results);
+            return results;
+        }
+
+        if (typeof value === 'object') {
+            const preferredKeys = [
+                'url',
+                'secure_url',
+                'full_size_url',
+                'large_url',
+                'medium_url',
+                'small_url',
+                'image_url',
+                'image',
+                'imageUrl',
+                'contentUrl',
+                'preview_url',
+                'thumbnail_url',
+            ];
+
+            for (const key of preferredKeys) {
+                if (key in value) normalizeImageCandidates(value[key], results);
+            }
+
+            if (!results.length) {
+                for (const nestedValue of Object.values(value)) {
+                    if (typeof nestedValue === 'string' && looksLikeImageUrl(nestedValue)) {
+                        normalizeImageCandidates(nestedValue, results);
+                    }
+                }
+            }
+        }
+
+        return results;
+    }
+
+    function dedupeUrls(urls) {
+        const seen = new Set();
+        const result = [];
+        for (const url of urls) {
+            const normalized = normalizeUrl(url);
+            if (!normalized || seen.has(normalized)) continue;
+            seen.add(normalized);
+            result.push(normalized);
+        }
+        return result;
+    }
+
+    function collectMetaTags() {
+        const entries = {};
+        for (const meta of document.querySelectorAll('meta[name], meta[property]')) {
+            const key = meta.getAttribute('name') || meta.getAttribute('property');
+            const value = meta.getAttribute('content');
+            if (!key || !value) continue;
+            entries[key] = value;
+        }
+        return entries;
+    }
+
+    function collectJsonScripts() {
+        const parsed = [];
+        const failures = [];
+
+        for (const [index, script] of [...document.scripts].entries()) {
+            const text = script.textContent?.trim();
+            if (!text) continue;
+
+            const type = cleanText(script.type || 'text/javascript');
+            const scriptId = cleanText(script.id);
+            const parseCandidates = [];
+
+            if (type.includes('json')) {
+                parseCandidates.push(text);
+            } else {
+                const assignmentMatch = text.match(/(?:__NEXT_DATA__|__INITIAL_STATE__|__PRELOADED_STATE__|__NUXT__|window\.__NUXT__|window\.__INITIAL_STATE__)\s*=\s*([\s\S]+?);?\s*$/);
+                if (assignmentMatch?.[1]) parseCandidates.push(assignmentMatch[1]);
+            }
+
+            for (const candidate of parseCandidates) {
+                const data = safeJsonParse(candidate);
+                if (data) {
+                    parsed.push({ index, type, id: scriptId || null, data });
+                } else {
+                    failures.push({
+                        index,
+                        type,
+                        id: scriptId || null,
+                        preview: candidate.slice(0, 300),
+                    });
+                }
+            }
+        }
+
+        return { parsed, failures };
+    }
+
+    function walkObject(value, callback, seen = new WeakSet(), path = []) {
+        if (!value || typeof value !== 'object') return;
+        if (seen.has(value)) return;
+        seen.add(value);
+        callback(value, path);
+
+        if (Array.isArray(value)) {
+            value.forEach((entry, index) => walkObject(entry, callback, seen, path.concat(index)));
+            return;
+        }
+
+        for (const [key, child] of Object.entries(value)) {
+            walkObject(child, callback, seen, path.concat(key));
+        }
+    }
+
+    function summarizePrice(value) {
+        if (value == null) return null;
+
+        if (typeof value === 'number') {
+            return { amount: value, text: String(value) };
+        }
+
+        if (typeof value === 'string') {
+            const text = cleanText(value);
+            const numericMatch = text.replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+            return { amount: numericMatch ? Number(numericMatch[0]) : null, text };
+        }
+
+        if (typeof value === 'object') {
+            const amount = Number(value.amount ?? value.value ?? value.price ?? value.price_amount ?? NaN);
+            const currency = cleanText(value.currency ?? value.currency_code ?? value.currencyCode);
+            const text = uniqueStrings([
+                value.formatted,
+                value.text,
+                value.display,
+                [Number.isFinite(amount) ? amount : '', currency].filter(Boolean).join(' '),
+            ])[0] || '';
+            return {
+                amount: Number.isFinite(amount) ? amount : null,
+                currency: currency || null,
+                text: text || null,
+            };
+        }
+
+        return null;
+    }
+
+    function scoreItemCandidate(candidate) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return 0;
+
+        let score = 0;
+        const currentItemId = getItemId();
+        const asText = JSON.stringify(candidate).slice(0, 5000);
+
+        if (cleanText(candidate.title || candidate.name)) score += 3;
+        if (cleanText(candidate.description)) score += 3;
+        if (candidate.photos || candidate.photo || candidate.images || candidate.image) score += 3;
+        if (candidate.price || candidate.price_numeric || candidate.price_amount || candidate.total_item_price) score += 2;
+        if (candidate.user || candidate.seller) score += 2;
+        if (candidate.id && String(candidate.id) === currentItemId) score += 4;
+        if (currentItemId && asText.includes(currentItemId)) score += 1;
+        return score;
+    }
+
+    function extractBestStructuredCandidate(parsedScripts) {
+        const candidates = [];
+
+        for (const script of parsedScripts) {
+            walkObject(script.data, object => {
+                const score = scoreItemCandidate(object);
+                if (score > 0) candidates.push({ score, object });
+            });
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.object || null;
+    }
+
+    function collectDefinitionListData() {
+        const details = {};
+
+        for (const dl of document.querySelectorAll('dl')) {
+            const children = [...dl.children];
+            for (let index = 0; index < children.length - 1; index += 1) {
+                const term = children[index];
+                const description = children[index + 1];
+                if (!term || !description) continue;
+                if (term.tagName !== 'DT' || description.tagName !== 'DD') continue;
+                const key = cleanText(term.textContent);
+                const value = cleanText(description.textContent);
+                if (key && value && !(key in details)) details[key] = value;
+            }
+        }
+
+        for (const row of document.querySelectorAll('table tr')) {
+            const cells = [...row.querySelectorAll('th, td')];
+            if (cells.length < 2) continue;
+            const key = cleanText(cells[0].textContent);
+            const value = cleanText(cells.slice(1).map(cell => cell.textContent).join(' '));
+            if (key && value && !(key in details)) details[key] = value;
+        }
+
+        return details;
+    }
+
+    function collectBreadcrumbs() {
+        const links = [
+            ...document.querySelectorAll('nav[aria-label*="breadcrumb" i] a, nav ol a, [data-testid*="breadcrumb"] a'),
+        ];
+        return uniqueStrings(links.map(link => link.textContent).filter(Boolean));
+    }
+
+    function collectDomPhotos() {
+        const urls = [];
+        const selectors = [
+            'main img[src]',
+            '[class*="photo"] img[src]',
+            '[class*="gallery"] img[src]',
+            '[data-testid*="photo"] img[src]',
+            '[data-testid*="gallery"] img[src]',
+        ];
+
+        for (const selector of selectors) {
+            for (const image of document.querySelectorAll(selector)) {
+                const candidate = image.currentSrc || image.src || '';
+                const width = image.naturalWidth || image.width || 0;
+                const height = image.naturalHeight || image.height || 0;
+                if (width >= 120 || height >= 120) urls.push(candidate);
+            }
+        }
+
+        return dedupeUrls(urls);
+    }
+
+    function collectSellerAvatar() {
+        const selectors = [
+            'a[href*="/member/"] img[src]',
+            '[data-testid*="profile"] img[src]',
+            '[data-testid*="seller"] img[src]',
+        ];
+
+        for (const selector of selectors) {
+            const image = document.querySelector(selector);
+            const url = normalizeUrl(image?.currentSrc || image?.src || '');
+            if (url) return url;
+        }
+        return '';
+    }
+
+    function normalizeStructuredData(jsonLdObjects) {
+        const products = [];
+
+        for (const entry of jsonLdObjects) {
+            walkObject(entry.data, object => {
+                const type = object['@type'];
+                const types = Array.isArray(type) ? type : [type];
+                if (types.some(value => String(value).toLowerCase() === 'product')) {
+                    products.push(object);
+                }
+            });
+        }
+
+        const product = products[0] || null;
+        const offer = product?.offers && !Array.isArray(product.offers) ? product.offers : null;
+        const seller = offer?.seller || product?.seller || null;
+        return {
+            product,
+            offer,
+            seller,
+        };
+    }
+
+    function collectItemData() {
+        const metaTags = collectMetaTags();
+        const jsonScripts = collectJsonScripts();
+        const jsonLdObjects = jsonScripts.parsed.filter(entry => entry.type.includes('ld+json'));
+        const normalizedJsonLd = normalizeStructuredData(jsonLdObjects);
+        const bestCandidate = extractBestStructuredCandidate(jsonScripts.parsed);
+        const definitionListData = collectDefinitionListData();
+        const breadcrumbs = collectBreadcrumbs();
+        const domPhotos = collectDomPhotos();
+        const sellerAvatar = collectSellerAvatar();
+
+        const metaTitle = contentFromMeta('og:title') || contentFromMeta('twitter:title', 'name');
+        const metaDescription = contentFromMeta('og:description') || contentFromMeta('description', 'name');
+        const metaImage = contentFromMeta('og:image') || contentFromMeta('twitter:image', 'name');
+        const structuredProduct = normalizedJsonLd.product || {};
+        const structuredOffer = normalizedJsonLd.offer || {};
+        const structuredSeller = normalizedJsonLd.seller || {};
+
+        const item = {
+            archivedAt: new Date().toISOString(),
+            snapshotVersion: SNAPSHOT_VERSION,
+            itemId: getItemId(),
+            pageUrl: window.location.href,
+            canonicalUrl: hrefFromSelectors(['link[rel="canonical"]']) || window.location.href,
+            pageTitle: cleanText(document.title),
+            metaTitle,
+            title: uniqueStrings([
+                cleanText(bestCandidate?.title),
+                cleanText(bestCandidate?.name),
+                cleanText(structuredProduct.name),
+                textFromSelectors(['h1', '[itemprop="name"]']),
+                metaTitle,
+            ])[0] || '',
+            description: uniqueStrings([
+                cleanText(bestCandidate?.description),
+                cleanText(structuredProduct.description),
+                textFromSelectors([
+                    '[itemprop="description"]',
+                    '[data-testid*="description"]',
+                    '[class*="description"]',
+                ]),
+                metaDescription,
+            ])[0] || '',
+            price: summarizePrice(
+                bestCandidate?.price
+                ?? bestCandidate?.total_item_price
+                ?? structuredOffer?.price
+                ?? contentFromMeta('product:price:amount')
+                ?? textFromSelectors([
+                    '[itemprop="price"]',
+                    '[data-testid*="price"]',
+                    '[class*="price"]',
+                ])
+            ),
+            currency: cleanText(
+                bestCandidate?.currency
+                || bestCandidate?.price?.currency
+                || structuredOffer?.priceCurrency
+                || contentFromMeta('product:price:currency')
+            ),
+            sellerUsername: uniqueStrings([
+                cleanText(bestCandidate?.user?.login),
+                cleanText(bestCandidate?.seller?.login),
+                cleanText(bestCandidate?.user?.username),
+                cleanText(bestCandidate?.seller?.username),
+                cleanText(structuredSeller?.name),
+                textFromSelectors([
+                    'a[href*="/member/"] span',
+                    '[data-testid*="seller"]',
+                    '[data-testid*="profile"]',
+                ]),
+            ])[0] || '',
+            sellerId: uniqueStrings([
+                cleanText(bestCandidate?.user?.id),
+                cleanText(bestCandidate?.seller?.id),
+                cleanText(bestCandidate?.user?.user_id),
+            ])[0] || '',
+            sellerProfileUrl: hrefFromSelectors([
+                'a[href*="/member/"]',
+                '[data-testid*="seller"] a[href]',
+                '[data-testid*="profile"] a[href]',
+            ]),
+            sellerAvatarUrl: sellerAvatar,
+            brand: uniqueStrings([
+                cleanText(bestCandidate?.brand_title),
+                cleanText(bestCandidate?.brand),
+                cleanText(structuredProduct?.brand?.name),
+                definitionListData.Brand,
+            ])[0] || '',
+            category: uniqueStrings([
+                cleanText(bestCandidate?.catalog_branch_title),
+                cleanText(bestCandidate?.catalog?.title),
+                cleanText(structuredProduct.category),
+                breadcrumbs.join(' > '),
+            ])[0] || '',
+            size: uniqueStrings([
+                cleanText(bestCandidate?.size_title),
+                cleanText(bestCandidate?.size),
+                definitionListData.Size,
+            ])[0] || '',
+            condition: uniqueStrings([
+                cleanText(bestCandidate?.status),
+                cleanText(bestCandidate?.status_title),
+                definitionListData.Condition,
+            ])[0] || '',
+            color: uniqueStrings([
+                cleanText(bestCandidate?.colour),
+                cleanText(bestCandidate?.color),
+                definitionListData.Colour,
+                definitionListData.Color,
+            ])[0] || '',
+            material: uniqueStrings([
+                cleanText(bestCandidate?.material),
+                definitionListData.Material,
+            ])[0] || '',
+            location: uniqueStrings([
+                cleanText(bestCandidate?.user?.country),
+                cleanText(bestCandidate?.seller?.country),
+                textFromSelectors([
+                    '[data-testid*="location"]',
+                    '[class*="location"]',
+                ]),
+            ])[0] || '',
+            favoriteCount: cleanText(bestCandidate?.favourite_count || bestCandidate?.favorite_count || ''),
+            viewCount: cleanText(bestCandidate?.view_count || bestCandidate?.views || ''),
+            uploadDate: uniqueStrings([
+                cleanText(bestCandidate?.created_at),
+                cleanText(bestCandidate?.createdAt),
+                cleanText(structuredProduct.releaseDate),
+                cleanText(document.querySelector('time')?.getAttribute('datetime') || ''),
+            ])[0] || '',
+            photos: dedupeUrls([
+                ...normalizeImageCandidates(bestCandidate?.photos),
+                ...normalizeImageCandidates(bestCandidate?.photo),
+                ...normalizeImageCandidates(bestCandidate?.images),
+                ...normalizeImageCandidates(bestCandidate?.image),
+                ...normalizeImageCandidates(structuredProduct.image),
+                metaImage,
+                ...domPhotos,
+            ]),
+            breadcrumbs,
+            attributes: definitionListData,
+        };
+
+        if (!item.currency && item.price?.currency) item.currency = item.price.currency;
+        if (item.price?.text && !item.currency) {
+            const currencySymbol = item.price.text.match(/[€$£]|USD|EUR|GBP/i)?.[0] || '';
+            if (currencySymbol) item.currency = currencySymbol;
+        }
+
+        return {
+            item,
+            raw: {
+                metaTags,
+                jsonLdObjects,
+                parsedJsonScripts: jsonScripts.parsed,
+                jsonParseFailures: jsonScripts.failures,
+                definitionListData,
+                breadcrumbs,
+                bestCandidate,
+                sellerAvatar,
+                domPhotos,
+                pageHtml: document.documentElement.outerHTML,
+                locationHref: window.location.href,
+                userAgent: navigator.userAgent,
+            },
+        };
+    }
+
+    function getFileExtensionFromType(contentType, url) {
+        const type = cleanText(contentType).toLowerCase();
+        if (type.includes('jpeg') || type.includes('jpg')) return 'jpg';
+        if (type.includes('png')) return 'png';
+        if (type.includes('webp')) return 'webp';
+        if (type.includes('gif')) return 'gif';
+        if (type.includes('svg')) return 'svg';
+        if (type.includes('bmp')) return 'bmp';
+        if (type.includes('avif')) return 'avif';
+        if (type.includes('json')) return 'json';
+        if (type.includes('html')) return 'html';
+
+        try {
+            const pathname = new URL(url, window.location.href).pathname;
+            const match = pathname.match(/\.([a-z0-9]{2,5})$/i);
+            return match ? match[1].toLowerCase() : 'bin';
+        } catch {
+            return 'bin';
+        }
+    }
+
+    function getRequestFunction() {
+        if (typeof GM_xmlhttpRequest === 'function') return GM_xmlhttpRequest;
+        if (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function') {
+            return details => GM.xmlHttpRequest(details);
+        }
+        return null;
+    }
+
+    function fetchBlob(url) {
+        const absoluteUrl = normalizeUrl(url);
+        if (!absoluteUrl) return Promise.reject(new Error('Invalid URL'));
+
+        const request = getRequestFunction();
+        if (request) {
+            return new Promise((resolve, reject) => {
+                request({
+                    method: 'GET',
+                    url: absoluteUrl,
+                    responseType: 'blob',
+                    onload: response => {
+                        if (response.status >= 200 && response.status < 300 && response.response) {
+                            resolve({
+                                blob: response.response,
+                                contentType: response.response.type || response.responseHeaders || '',
+                            });
+                        } else {
+                            reject(new Error(`HTTP ${response.status}`));
+                        }
+                    },
+                    onerror: () => reject(new Error('Network error')),
+                    ontimeout: () => reject(new Error('Request timeout')),
+                });
+            });
+        }
+
+        return fetch(absoluteUrl, { credentials: 'include' })
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.blob().then(blob => ({
+                    blob,
+                    contentType: response.headers.get('content-type') || blob.type || '',
+                }));
+            });
+    }
+
+    function triggerDownload(blob, filename) {
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    }
+
+    function buildSummaryText(item, downloadLog) {
+        const lines = [
+            `Title: ${item.title || 'N/A'}`,
+            `Item ID: ${item.itemId || 'N/A'}`,
+            `Page URL: ${item.pageUrl || 'N/A'}`,
+            `Canonical URL: ${item.canonicalUrl || 'N/A'}`,
+            `Price: ${item.price?.text || [item.price?.amount, item.currency].filter(Boolean).join(' ') || 'N/A'}`,
+            `Seller username: ${item.sellerUsername || 'N/A'}`,
+            `Seller ID: ${item.sellerId || 'N/A'}`,
+            `Seller profile: ${item.sellerProfileUrl || 'N/A'}`,
+            `Brand: ${item.brand || 'N/A'}`,
+            `Category: ${item.category || 'N/A'}`,
+            `Size: ${item.size || 'N/A'}`,
+            `Condition: ${item.condition || 'N/A'}`,
+            `Color: ${item.color || 'N/A'}`,
+            `Material: ${item.material || 'N/A'}`,
+            `Location: ${item.location || 'N/A'}`,
+            `Favorites: ${item.favoriteCount || 'N/A'}`,
+            `Views: ${item.viewCount || 'N/A'}`,
+            `Upload date: ${item.uploadDate || 'N/A'}`,
+            `Photos detected: ${item.photos.length}`,
+            `Photos saved: ${downloadLog.savedPhotos}`,
+            `Photos failed: ${downloadLog.failedPhotos.length}`,
+            `Archived at: ${item.archivedAt}`,
+            '',
+            'Description:',
+            item.description || 'N/A',
+            '',
+            'Breadcrumbs:',
+            item.breadcrumbs.join(' > ') || 'N/A',
+            '',
+            'Attributes:',
+        ];
+
+        const attributeEntries = Object.entries(item.attributes || {});
+        if (attributeEntries.length) {
+            for (const [key, value] of attributeEntries) {
+                lines.push(`- ${key}: ${value}`);
+            }
+        } else {
+            lines.push('- N/A');
+        }
+
+        return `${lines.join('\n')}\n`;
+    }
+
+    async function buildZipArchive() {
+        if (typeof JSZip !== 'function') throw new Error('JSZip did not load');
+
+        const { item, raw } = collectItemData();
+        if (!item.itemId) throw new Error('No Vinted item detected on this page');
+
+        const archiveName = buildArchiveName(item);
+        const zip = new JSZip();
+        const photosFolder = zip.folder('photos');
+        const rawFolder = zip.folder('raw');
+        const sellerFolder = zip.folder('seller');
+        const downloadLog = {
+            savedPhotos: 0,
+            failedPhotos: [],
+            savedSellerAssets: [],
+        };
+
+        for (const [index, photoUrl] of item.photos.entries()) {
+            setStatus(`Downloading photo ${index + 1}/${item.photos.length}…`);
+            try {
+                const { blob, contentType } = await fetchBlob(photoUrl);
+                const extension = getFileExtensionFromType(contentType, photoUrl);
+                photosFolder.file(`${String(index + 1).padStart(2, '0')}.${extension}`, blob);
+                downloadLog.savedPhotos += 1;
+            } catch (error) {
+                downloadLog.failedPhotos.push({
+                    url: photoUrl,
+                    error: error?.message || 'Unknown error',
+                });
+            }
+        }
+
+        if (item.sellerAvatarUrl) {
+            setStatus('Downloading seller avatar…');
+            try {
+                const { blob, contentType } = await fetchBlob(item.sellerAvatarUrl);
+                const extension = getFileExtensionFromType(contentType, item.sellerAvatarUrl);
+                sellerFolder.file(`avatar.${extension}`, blob);
+                downloadLog.savedSellerAssets.push('avatar');
+            } catch (error) {
+                downloadLog.savedSellerAssets.push(`avatar_failed:${error?.message || 'unknown error'}`);
+            }
+        }
+
+        const normalizedItem = {
+            ...item,
+            photoCount: item.photos.length,
+        };
+
+        zip.file('metadata.json', prettyJson(normalizedItem));
+        zip.file('summary.txt', buildSummaryText(normalizedItem, downloadLog));
+        rawFolder.file('meta-tags.json', prettyJson(raw.metaTags));
+        rawFolder.file('json-ld.json', prettyJson(raw.jsonLdObjects));
+        rawFolder.file('parsed-json-scripts.json', prettyJson(raw.parsedJsonScripts));
+        rawFolder.file('json-parse-failures.json', prettyJson(raw.jsonParseFailures));
+        rawFolder.file('dom-data.json', prettyJson({
+            definitionListData: raw.definitionListData,
+            breadcrumbs: raw.breadcrumbs,
+            bestCandidate: raw.bestCandidate,
+            sellerAvatar: raw.sellerAvatar,
+            domPhotos: raw.domPhotos,
+        }));
+        rawFolder.file('download-log.json', prettyJson(downloadLog));
+        rawFolder.file('page.html', raw.pageHtml);
+        rawFolder.file('context.json', prettyJson({
+            locationHref: raw.locationHref,
+            userAgent: raw.userAgent,
+            archivedAt: normalizedItem.archivedAt,
+            snapshotVersion: SNAPSHOT_VERSION,
+        }));
+
+        setStatus('Generating ZIP…');
+        const blob = await zip.generateAsync({ type: 'blob' });
+        triggerDownload(blob, `${archiveName}.zip`);
+        setStatus(`Saved ${archiveName}.zip`);
+    }
+
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            #${PANEL_ID} {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                z-index: 2147483647;
+                width: min(360px, calc(100vw - 24px));
+                padding: 12px;
+                border: 1px solid rgba(17, 24, 39, 0.16);
+                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.97);
+                color: #111827;
+                box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+                font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                backdrop-filter: blur(8px);
+            }
+            #${PANEL_ID}[hidden] {
+                display: none !important;
+            }
+            #${PANEL_ID} strong {
+                display: block;
+                margin: 0 0 4px;
+                font-size: 13px;
+            }
+            #${PANEL_ID} small {
+                display: block;
+                margin-bottom: 10px;
+                color: #4b5563;
+            }
+            #${BUTTON_ID} {
+                width: 100%;
+                border: 0;
+                border-radius: 10px;
+                padding: 10px 12px;
+                background: linear-gradient(135deg, #0f766e, #0891b2);
+                color: #fff;
+                font: 700 13px/1.2 inherit;
+                cursor: pointer;
+            }
+            #${BUTTON_ID}:disabled {
+                opacity: 0.65;
+                cursor: wait;
+            }
+            #${STATUS_ID} {
+                margin-top: 8px;
+                min-height: 18px;
+                color: #374151;
+                word-break: break-word;
+            }
+            #${STATUS_ID}.error {
+                color: #b91c1c;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function setStatus(message, isError = false) {
+        const status = document.getElementById(STATUS_ID);
+        if (!status) return;
+        status.textContent = message;
+        status.classList.toggle('error', Boolean(isError));
+    }
+
+    function updatePanelTitle() {
+        const titleElement = document.getElementById(TITLE_ID);
+        if (!titleElement) return;
+        const title = uniqueStrings([
+            contentFromMeta('og:title'),
+            contentFromMeta('twitter:title', 'name'),
+            textFromSelectors(['h1', '[itemprop="name"]']),
+        ])[0] || 'Current item';
+        titleElement.textContent = title;
+    }
+
+    async function handleDownloadClick() {
+        if (state.busy) return;
+
+        const button = document.getElementById(BUTTON_ID);
+        state.busy = true;
+        if (button) button.disabled = true;
+        setStatus('Preparing archive…');
+
+        try {
+            await buildZipArchive();
+        } catch (error) {
+            console.error('[Vinted Item ZIP Backup]', error);
+            setStatus(`Archive failed: ${error?.message || 'unknown error'}`, true);
+        } finally {
+            state.busy = false;
+            if (button) button.disabled = false;
+        }
+    }
+
+    function ensurePanel() {
+        ensureStyle();
+
+        let panel = document.getElementById(PANEL_ID);
+        if (!panel) {
+            panel = document.createElement('section');
+            panel.id = PANEL_ID;
+            panel.innerHTML = `
+                <strong>Vinted item ZIP backup</strong>
+                <small id="${TITLE_ID}">Current item</small>
+                <button type="button" id="${BUTTON_ID}">Save item as ZIP</button>
+                <div id="${STATUS_ID}">Photos, metadata, page HTML, and structured data will be included when available.</div>
+            `;
+            document.body.appendChild(panel);
+            panel.querySelector(`#${BUTTON_ID}`)?.addEventListener('click', handleDownloadClick);
+        }
+
+        panel.hidden = !isItemPage();
+        if (!panel.hidden) updatePanelTitle();
+    }
+
+    function syncUi() {
+        const currentUrl = window.location.href;
+        if (state.lastUrl !== currentUrl) {
+            state.lastUrl = currentUrl;
+            ensurePanel();
+            if (isItemPage()) {
+                setStatus('Ready to capture this item into a ZIP archive.');
+            }
+        } else if (isItemPage() && !document.getElementById(PANEL_ID)) {
+            ensurePanel();
+        }
+    }
+
+    function init() {
+        ensurePanel();
+        state.lastUrl = window.location.href;
+        const observer = new MutationObserver(() => {
+            window.clearTimeout(state.statusTimer);
+            state.statusTimer = window.setTimeout(syncUi, 120);
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        window.setInterval(syncUi, 1000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();
