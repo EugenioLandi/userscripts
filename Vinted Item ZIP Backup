@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinted Item ZIP Backup
 // @namespace    https://www.vinted.com/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Save the current Vinted item page as a ZIP with photos, metadata, structured data, and a page snapshot
 // @include      https://vinted.*/*
 // @include      https://*.vinted.*/*
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    if (!/^(?:www\.)?vinted\.[a-z]{2,}(?:\.[a-z]{2,})?$/i.test(window.location.hostname)) return;
+    if (!/^(?:www\.)?vinted\.(?:com|[a-z]{2}|[a-z]{2}\.[a-z]{2})$/i.test(window.location.hostname)) return;
     if (window.__vintedItemZipBackupInitialized) return;
     window.__vintedItemZipBackupInitialized = true;
 
@@ -27,7 +27,7 @@
     const BUTTON_ID = 'vinted-item-zip-backup-button';
     const STATUS_ID = 'vinted-item-zip-backup-status';
     const TITLE_ID = 'vinted-item-zip-backup-title';
-    const SNAPSHOT_VERSION = '1.0.2';
+    const SNAPSHOT_VERSION = '1.0.3';
     const state = {
         busy: false,
         lastUrl: '',
