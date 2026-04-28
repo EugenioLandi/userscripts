@@ -818,7 +818,6 @@
             signal: controller?.signal,
         })
             .then(response => {
-                clearRequestTimeout();
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.blob().then(blob => ({
                     blob,
@@ -826,18 +825,17 @@
                 }));
             })
             .catch(error => {
-                clearRequestTimeout();
                 if (error?.name === 'AbortError') throw new Error('Request timeout');
                 throw error;
             });
-        const timeoutPromise = new Promise((resolve, reject) => {
+
+        return new Promise((resolve, reject) => {
             timeoutId = window.setTimeout(() => {
                 if (controller) controller.abort();
                 reject(new Error('Request timeout'));
             }, ASSET_REQUEST_TIMEOUT_MS);
+            requestPromise.then(resolve, reject).finally(clearRequestTimeout);
         });
-
-        return Promise.race([requestPromise, timeoutPromise]).finally(clearRequestTimeout);
     }
 
     function triggerDownload(blob, filename) {
@@ -970,13 +968,13 @@
             snapshotVersion: SNAPSHOT_VERSION,
         }));
 
-        let lastReportedProgress = -ZIP_PROGRESS_STEP;
+        let lastReportedPercentage = -ZIP_PROGRESS_STEP;
         setStatus('Generating ZIP…');
         const blob = await zip.generateAsync({ type: 'blob' }, metadata => {
             if (!metadata) return;
             const percent = Math.floor(metadata.percent || 0);
-            if (percent === 100 || percent >= lastReportedProgress + ZIP_PROGRESS_STEP) {
-                lastReportedProgress = percent;
+            if (percent === 100 || percent >= lastReportedPercentage + ZIP_PROGRESS_STEP) {
+                lastReportedPercentage = percent;
                 setStatus(`Generating ZIP… ${percent}%`);
             }
         });
