@@ -138,7 +138,7 @@ If you want a manual refresh:
 
 #### Vinted Item ZIP Backup
 - **Site:** Vinted item pages.
-- **Purpose:** saves the current item page as a ZIP archive with photos, normalized metadata, raw structured data, and a page snapshot.
+- **Purpose:** saves the current item page as a ZIP archive with optional image downloads, normalized metadata, raw structured data, and a page snapshot.
 - **Best for:** keeping a portable offline record of a listing before it changes or disappears.
 - **Detailed notes:** see `vinted-item-zip-backup-report.md`.
 
