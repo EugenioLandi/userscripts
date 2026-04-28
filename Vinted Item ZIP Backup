@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Vinted Item ZIP Backup
 // @namespace    https://www.vinted.com/
-// @version      1.0.5
+// @version      1.1.0
 // @description  Save the current Vinted item page as a ZIP with photos, metadata, structured data, and a page snapshot
-// @match        https://vinted.it/*
-// @match        https://www.vinted.it/*
+// @include      https://vinted.*/*
+// @include      https://www.vinted.*/*
 // @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Vinted%20Item%20ZIP%20Backup
 // @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Vinted%20Item%20ZIP%20Backup
 // @grant        GM_xmlhttpRequest
@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    if (!/^(?:www\.)?vinted\.it$/i.test(window.location.hostname)) return;
+    if (!/^(?:www\.)?vinted\.[a-z.]+$/i.test(window.location.hostname)) return;
     if (window.__vintedItemZipBackupInitialized) return;
     window.__vintedItemZipBackupInitialized = true;
 
@@ -27,13 +27,16 @@
     const BUTTON_ID = 'vinted-item-zip-backup-button';
     const STATUS_ID = 'vinted-item-zip-backup-status';
     const TITLE_ID = 'vinted-item-zip-backup-title';
-    const SNAPSHOT_VERSION = '1.0.5';
+    const TOGGLE_ID = 'vinted-item-zip-backup-include-images';
+    const SNAPSHOT_VERSION = '1.1.0';
     const ASSET_REQUEST_TIMEOUT_MS = 20000;
     const MIN_PHOTO_DIMENSION = 160;
     const NON_ITEM_IMAGE_URL_PATTERN = /avatar|profile|member|seller|logo|icon/;
     const ZIP_PROGRESS_STEP = 5;
+    const INCLUDE_IMAGES_STORAGE_KEY = 'vinted-item-zip-backup-include-images';
     const state = {
         busy: false,
+        includeImages: loadIncludeImagesPreference(),
         lastUrl: '',
         statusTimer: 0,
     };
@@ -45,6 +48,21 @@
     function getItemId() {
         const match = window.location.pathname.match(/\/items\/(\d+)/);
         return match ? match[1] : '';
+    }
+
+    function loadIncludeImagesPreference() {
+        try {
+            const storedValue = window.localStorage.getItem(INCLUDE_IMAGES_STORAGE_KEY);
+            if (storedValue === 'false') return false;
+            if (storedValue === 'true') return true;
+        } catch {}
+        return true;
+    }
+
+    function persistIncludeImagesPreference(value) {
+        try {
+            window.localStorage.setItem(INCLUDE_IMAGES_STORAGE_KEY, String(Boolean(value)));
+        } catch {}
     }
 
     function cleanText(value) {
@@ -878,6 +896,7 @@
             `Favorites: ${item.favoriteCount || 'N/A'}`,
             `Views: ${item.viewCount || 'N/A'}`,
             `Upload date: ${item.uploadDate || 'N/A'}`,
+            `Images included: ${downloadLog.includeImages ? 'Yes' : 'No'}`,
             `Photos detected: ${item.photos.length}`,
             `Photos saved: ${downloadLog.savedPhotos}`,
             `Photos failed: ${downloadLog.failedPhotos.length}`,
@@ -904,11 +923,12 @@
         return `${lines.join('\n')}\n`;
     }
 
-    async function buildZipArchive() {
+    async function buildZipArchive(options = {}) {
         if (typeof JSZip !== 'function') throw new Error('JSZip did not load');
 
         const { item, raw } = collectItemData();
         if (!item.itemId) throw new Error('No Vinted item detected on this page');
+        const includeImages = options.includeImages !== false;
 
         const archiveName = buildArchiveName(item);
         const zip = new JSZip();
@@ -916,40 +936,46 @@
         const rawFolder = zip.folder('raw');
         const sellerFolder = zip.folder('seller');
         const downloadLog = {
+            includeImages,
             savedPhotos: 0,
             failedPhotos: [],
             savedSellerAssets: [],
         };
 
-        for (const [index, photoUrl] of item.photos.entries()) {
-            setStatus(`Downloading photo ${index + 1}/${item.photos.length}…`);
-            try {
-                const { blob, contentType } = await fetchBlob(photoUrl);
-                const extension = getFileExtensionFromType(contentType, photoUrl);
-                photosFolder.file(`${String(index + 1).padStart(2, '0')}.${extension}`, blob);
-                downloadLog.savedPhotos += 1;
-            } catch (error) {
-                downloadLog.failedPhotos.push({
-                    url: photoUrl,
-                    error: error?.message || 'Unknown error',
-                });
+        if (includeImages) {
+            for (const [index, photoUrl] of item.photos.entries()) {
+                setStatus(`Downloading photo ${index + 1}/${item.photos.length}…`);
+                try {
+                    const { blob, contentType } = await fetchBlob(photoUrl);
+                    const extension = getFileExtensionFromType(contentType, photoUrl);
+                    photosFolder.file(`${String(index + 1).padStart(2, '0')}.${extension}`, blob);
+                    downloadLog.savedPhotos += 1;
+                } catch (error) {
+                    downloadLog.failedPhotos.push({
+                        url: photoUrl,
+                        error: error?.message || 'Unknown error',
+                    });
+                }
             }
-        }
 
-        if (item.sellerAvatarUrl) {
-            setStatus('Downloading seller avatar…');
-            try {
-                const { blob, contentType } = await fetchBlob(item.sellerAvatarUrl);
-                const extension = getFileExtensionFromType(contentType, item.sellerAvatarUrl);
-                sellerFolder.file(`avatar.${extension}`, blob);
-                downloadLog.savedSellerAssets.push('avatar');
-            } catch (error) {
-                downloadLog.savedSellerAssets.push(`avatar_failed:${error?.message || 'unknown error'}`);
+            if (item.sellerAvatarUrl) {
+                setStatus('Downloading seller avatar…');
+                try {
+                    const { blob, contentType } = await fetchBlob(item.sellerAvatarUrl);
+                    const extension = getFileExtensionFromType(contentType, item.sellerAvatarUrl);
+                    sellerFolder.file(`avatar.${extension}`, blob);
+                    downloadLog.savedSellerAssets.push('avatar');
+                } catch (error) {
+                    downloadLog.savedSellerAssets.push(`avatar_failed:${error?.message || 'unknown error'}`);
+                }
             }
+        } else {
+            downloadLog.savedSellerAssets.push('skipped_by_setting');
         }
 
         const normalizedItem = {
             ...item,
+            includeImages,
             photoCount: item.photos.length,
         };
 
@@ -1047,6 +1073,16 @@
             #${STATUS_ID}.error {
                 color: #b91c1c;
             }
+            #${PANEL_ID} label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin: 0 0 10px;
+                color: #374151;
+            }
+            #${PANEL_ID} input[type="checkbox"] {
+                margin: 0;
+            }
         `;
         document.head.appendChild(style);
     }
@@ -1069,16 +1105,35 @@
         titleElement.textContent = title;
     }
 
+    function getReadyStatusMessage() {
+        return state.includeImages
+            ? 'Ready to capture this item into a ZIP archive.'
+            : 'Ready to capture this item into a ZIP archive without downloading images.';
+    }
+
+    function syncIncludeImagesToggle() {
+        const toggle = document.getElementById(TOGGLE_ID);
+        if (toggle) toggle.checked = state.includeImages;
+    }
+
+    function handleIncludeImagesToggle(event) {
+        state.includeImages = Boolean(event?.target?.checked);
+        persistIncludeImagesPreference(state.includeImages);
+        if (isItemPage() && !state.busy) {
+            setStatus(getReadyStatusMessage());
+        }
+    }
+
     async function handleDownloadClick() {
         if (state.busy) return;
 
         const button = document.getElementById(BUTTON_ID);
         state.busy = true;
         if (button) button.disabled = true;
-        setStatus('Preparing archive…');
+        setStatus(state.includeImages ? 'Preparing archive…' : 'Preparing archive without images…');
 
         try {
-            await buildZipArchive();
+            await buildZipArchive({ includeImages: state.includeImages });
         } catch (error) {
             console.error('[Vinted Item ZIP Backup]', error);
             setStatus(`Archive failed: ${error?.message || 'unknown error'}`, true);
@@ -1098,14 +1153,20 @@
             panel.innerHTML = `
                 <strong>Vinted item ZIP backup</strong>
                 <small id="${TITLE_ID}">Current item</small>
+                <label for="${TOGGLE_ID}">
+                    <input type="checkbox" id="${TOGGLE_ID}" checked>
+                    Include images in the ZIP
+                </label>
                 <button type="button" id="${BUTTON_ID}">Save item as ZIP</button>
                 <div id="${STATUS_ID}">Photos, metadata, page HTML, and structured data will be included when available.</div>
             `;
             document.body.appendChild(panel);
             panel.querySelector(`#${BUTTON_ID}`)?.addEventListener('click', handleDownloadClick);
+            panel.querySelector(`#${TOGGLE_ID}`)?.addEventListener('change', handleIncludeImagesToggle);
         }
 
         panel.hidden = !isItemPage();
+        syncIncludeImagesToggle();
         if (!panel.hidden) updatePanelTitle();
     }
 
@@ -1115,7 +1176,7 @@
             state.lastUrl = currentUrl;
             ensurePanel();
             if (isItemPage()) {
-                setStatus('Ready to capture this item into a ZIP archive.');
+                setStatus(getReadyStatusMessage());
             }
         } else if (isItemPage() && !document.getElementById(PANEL_ID)) {
             ensurePanel();
