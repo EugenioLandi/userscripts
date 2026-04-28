@@ -96,23 +96,12 @@ That makes the archive easier to store, share, inspect, and script against later
 
 ## Coverage
 
-The userscript is configured for Vinted domains through wildcard includes:
+The userscript is configured specifically for the Italian Vinted domain:
 
-- `https://vinted.*/*`
-- `https://*.vinted.*/*`
+- `https://vinted.it/*`
+- `https://www.vinted.it/*`
 
-The earlier `@match` version used wildcard top-level domains such as `vinted.*`, which Tampermonkey does not treat as valid match patterns. Using `@include` keeps the broad Vinted domain coverage while allowing the userscript manager to register the script correctly.
-
-The metadata stays broad so the userscript manager can register the script across Vinted country domains, while the script itself validates the hostname at runtime and only continues on hosts that look like:
-
-- `vinted.com`
-- `www.vinted.com`
-- `vinted.<country-code>`
-- `www.vinted.<country-code>`
-- `vinted.<country-code>.<country-code>`
-- `www.vinted.<country-code>.<country-code>`
-
-That keeps common Vinted country domains such as `www.vinted.fr` and `www.vinted.co.uk` working while rejecting unrelated lookalike hosts.
+The earlier `@match` version used wildcard top-level domains such as `vinted.*`, which Tampermonkey does not treat as valid match patterns. Switching to explicit `vinted.it` match patterns makes the script show up correctly as active on the site you actually use.
 
 The UI only appears on pages whose path looks like a Vinted item page:
 
