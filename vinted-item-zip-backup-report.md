@@ -103,6 +103,8 @@ The userscript is configured for Vinted domains through wildcard includes:
 
 The earlier `@match` version used wildcard top-level domains such as `vinted.*`, which Tampermonkey does not treat as valid match patterns. Using `@include` keeps the broad Vinted domain coverage while allowing the userscript manager to register the script correctly.
 
+The script also validates the hostname at runtime and only continues on hosts that look like `vinted.<tld>` or `www.vinted.<tld>`, including two-part country domains such as `www.vinted.co.uk`.
+
 The UI only appears on pages whose path looks like a Vinted item page:
 
 - `/items/<numeric id>`
