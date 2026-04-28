@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinted Item ZIP Backup
 // @namespace    https://www.vinted.com/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Save the current Vinted item page as a ZIP with photos, metadata, structured data, and a page snapshot
 // @include      https://vinted.*/*
 // @include      https://www.vinted.*/*
@@ -785,7 +785,6 @@
             raw: {
                 metaTags,
                 jsonLdObjects,
-                parsedJsonScripts: jsonScripts.parsed,
                 jsonParseFailures: jsonScripts.failures,
                 definitionListData,
                 breadcrumbs,
@@ -1016,7 +1015,6 @@
         zip.file('summary.txt', buildSummaryText(normalizedItem, downloadLog));
         rawFolder.file('meta-tags.json', prettyJson(raw.metaTags));
         rawFolder.file('json-ld.json', prettyJson(raw.jsonLdObjects));
-        rawFolder.file('parsed-json-scripts.json', prettyJson(raw.parsedJsonScripts));
         rawFolder.file('json-parse-failures.json', prettyJson(raw.jsonParseFailures));
         rawFolder.file('dom-data.json', prettyJson({
             definitionListData: raw.definitionListData,
@@ -1028,7 +1026,7 @@
             secondaryStructuredPhotos: raw.secondaryStructuredPhotos,
         }));
         rawFolder.file('download-log.json', prettyJson(downloadLog));
-        rawFolder.file('page.html', raw.pageHtml);
+        rawFolder.file('page.html', raw.pageHtml.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, '<script$1>/* script content omitted to keep archive size manageable */<\/script>'));
         rawFolder.file('context.json', prettyJson({
             locationHref: raw.locationHref,
             userAgent: raw.userAgent,
