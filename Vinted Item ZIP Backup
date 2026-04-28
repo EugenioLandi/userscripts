@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    if (!/^(?:www\.)?vinted\.[a-z.]+$/i.test(window.location.hostname)) return;
+    if (!/^(?:www\.)?vinted\.[a-z]{2,}(?:\.[a-z]{2,})?$/i.test(window.location.hostname)) return;
     if (window.__vintedItemZipBackupInitialized) return;
     window.__vintedItemZipBackupInitialized = true;
 
@@ -53,8 +53,7 @@
     function loadIncludeImagesPreference() {
         try {
             const storedValue = window.localStorage.getItem(INCLUDE_IMAGES_STORAGE_KEY);
-            if (storedValue === 'false') return false;
-            if (storedValue === 'true') return true;
+            if (storedValue != null) return storedValue !== 'false';
         } catch {}
         return true;
     }
@@ -1154,7 +1153,7 @@
                 <strong>Vinted item ZIP backup</strong>
                 <small id="${TITLE_ID}">Current item</small>
                 <label for="${TOGGLE_ID}">
-                    <input type="checkbox" id="${TOGGLE_ID}" checked>
+                    <input type="checkbox" id="${TOGGLE_ID}">
                     Include images in the ZIP
                 </label>
                 <button type="button" id="${BUTTON_ID}">Save item as ZIP</button>
