@@ -96,10 +96,12 @@ That makes the archive easier to store, share, inspect, and script against later
 
 ## Coverage
 
-The userscript is configured for Vinted domains through wildcard matches:
+The userscript is configured for Vinted domains through wildcard includes:
 
-- `https://www.vinted.*/*`
+- `https://vinted.*/*`
 - `https://*.vinted.*/*`
+
+The earlier `@match` version used wildcard top-level domains such as `vinted.*`, which Tampermonkey does not treat as valid match patterns. Using `@include` keeps the broad Vinted domain coverage while allowing the userscript manager to register the script correctly.
 
 The UI only appears on pages whose path looks like a Vinted item page:
 
