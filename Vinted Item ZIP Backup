@@ -897,6 +897,13 @@
         });
     }
 
+    function stripInlineScriptContent(html) {
+        return html.replace(
+            /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
+            '<script$1>/* script content omitted to keep archive size manageable */<\/script>'
+        );
+    }
+
     function triggerDownload(blob, filename) {
         const objectUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -1026,7 +1033,7 @@
             secondaryStructuredPhotos: raw.secondaryStructuredPhotos,
         }));
         rawFolder.file('download-log.json', prettyJson(downloadLog));
-        rawFolder.file('page.html', raw.pageHtml.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, '<script$1>/* script content omitted to keep archive size manageable */<\/script>'));
+        rawFolder.file('page.html', stripInlineScriptContent(raw.pageHtml));
         rawFolder.file('context.json', prettyJson({
             locationHref: raw.locationHref,
             userAgent: raw.userAgent,
