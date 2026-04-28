@@ -39,7 +39,7 @@ When the page exposes the data, the archive includes:
 - `summary.txt`
   - readable summary of the main listing details
 - `photos/`
-  - every detected item photo that the script manages to download
+  - the listing photos detected from structured item data, with a stricter DOM fallback only when structured photo data is missing
 - `seller/avatar.*`
   - seller avatar if it is exposed on the page and downloadable
 - `raw/meta-tags.json`
@@ -75,7 +75,7 @@ The script combines multiple sources because Vinted can change page structure ov
    - breadcrumbs
    - definition lists
    - tables
-   - large item images
+   - likely gallery images, only as a fallback when structured photo data is missing
 4. **Raw page snapshot**
    - the full HTML page is saved even when some fields cannot be normalized cleanly
 
@@ -117,7 +117,7 @@ The UI only appears on pages whose path looks like a Vinted item page:
   - preparing archive
   - downloading photos
   - downloading seller avatar
-  - generating ZIP
+  - generating ZIP with visible percentage updates
   - success or failure
 
 ## Dependency
@@ -161,6 +161,8 @@ Possible reasons:
 - blocked cross-origin requests
 
 When that happens, the ZIP still includes metadata and a failure log.
+
+The downloader now also uses explicit request timeouts so a single stalled asset does not block ZIP generation forever.
 
 ### 4. Not every page script block is guaranteed to be parseable JSON
 
