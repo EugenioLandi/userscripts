@@ -18,7 +18,41 @@
 (function () {
     'use strict';
 
-    if (!/^(?:www\.)?vinted\.[a-z]{2,3}(?:\.[a-z]{2})?$/i.test(window.location.hostname)) return;
+    function isSupportedVintedHost(hostname) {
+        const normalizedHostname = String(hostname || '').toLowerCase();
+        const bareHostname = normalizedHostname.startsWith('www.')
+            ? normalizedHostname.slice(4)
+            : normalizedHostname;
+        const suffix = bareHostname.startsWith('vinted.')
+            ? bareHostname.slice('vinted.'.length)
+            : '';
+        return [
+            'at',
+            'be',
+            'co.uk',
+            'com',
+            'cz',
+            'de',
+            'dk',
+            'es',
+            'fi',
+            'fr',
+            'hr',
+            'hu',
+            'it',
+            'lt',
+            'lu',
+            'nl',
+            'pl',
+            'pt',
+            'ro',
+            'se',
+            'si',
+            'sk',
+        ].includes(suffix);
+    }
+
+    if (!isSupportedVintedHost(window.location.hostname)) return;
     if (window.__vintedItemZipBackupInitialized) return;
     window.__vintedItemZipBackupInitialized = true;
 
@@ -969,7 +1003,7 @@
                 }
             }
         } else {
-            downloadLog.savedSellerAssets.push('skipped_by_setting');
+            downloadLog.savedSellerAssets.push('avatar_skipped:user_setting');
         }
 
         const normalizedItem = {
