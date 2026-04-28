@@ -18,7 +18,7 @@
 (function () {
     'use strict';
 
-    if (!/^(?:www\.)?vinted\.[a-z]{2,}(?:\.[a-z]{2,})?$/i.test(window.location.hostname)) return;
+    if (!/^(?:www\.)?vinted\.[a-z]{2,3}(?:\.[a-z]{2})?$/i.test(window.location.hostname)) return;
     if (window.__vintedItemZipBackupInitialized) return;
     window.__vintedItemZipBackupInitialized = true;
 
@@ -53,7 +53,7 @@
     function loadIncludeImagesPreference() {
         try {
             const storedValue = window.localStorage.getItem(INCLUDE_IMAGES_STORAGE_KEY);
-            if (storedValue != null) return storedValue !== 'false';
+            if (storedValue !== null) return storedValue !== 'false';
         } catch {}
         return true;
     }
