@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinted Item ZIP Backup
 // @namespace    https://www.vinted.com/
-// @version      1.0.4
+// @version      1.0.5
 // @description  Save the current Vinted item page as a ZIP with photos, metadata, structured data, and a page snapshot
 // @match        https://vinted.it/*
 // @match        https://www.vinted.it/*
@@ -27,7 +27,11 @@
     const BUTTON_ID = 'vinted-item-zip-backup-button';
     const STATUS_ID = 'vinted-item-zip-backup-status';
     const TITLE_ID = 'vinted-item-zip-backup-title';
-    const SNAPSHOT_VERSION = '1.0.4';
+    const SNAPSHOT_VERSION = '1.0.5';
+    const ASSET_REQUEST_TIMEOUT_MS = 20000;
+    const MIN_PHOTO_DIMENSION = 160;
+    const NON_ITEM_IMAGE_URL_PATTERN = /avatar|profile|member|seller|logo|icon/;
+    const ZIP_PROGRESS_STEP = 5;
     const state = {
         busy: false,
         lastUrl: '',
@@ -280,6 +284,42 @@
         return result;
     }
 
+    function filterItemPhotoUrls(urls, options = {}) {
+        const itemId = cleanText(options.itemId);
+        const sellerAvatarUrl = normalizeUrl(options.sellerAvatarUrl);
+        const seen = new Set();
+        const results = [];
+
+        for (const url of urls) {
+            const normalized = normalizeUrl(url);
+            if (!normalized || seen.has(normalized)) continue;
+            seen.add(normalized);
+            if (sellerAvatarUrl && normalized === sellerAvatarUrl) continue;
+
+            let pathname = '';
+            let search = '';
+            try {
+                const parsed = new URL(normalized);
+                pathname = parsed.pathname.toLowerCase();
+                search = parsed.search.toLowerCase();
+            } catch {
+                pathname = normalized.toLowerCase();
+            }
+
+            const looksLikeAvatar = /user(?:name)?-photo/.test(pathname)
+                || NON_ITEM_IMAGE_URL_PATTERN.test(pathname)
+                || NON_ITEM_IMAGE_URL_PATTERN.test(search);
+            if (looksLikeAvatar) continue;
+
+            const matchedItemId = pathname.match(/\/items\/(\d+)/)?.[1] || '';
+            if (itemId && matchedItemId && matchedItemId !== itemId) continue;
+
+            results.push(normalized);
+        }
+
+        return results;
+    }
+
     function collectMetaTags() {
         const entries = {};
         for (const meta of document.querySelectorAll('meta[name], meta[property]')) {
@@ -440,26 +480,53 @@
         return uniqueStrings(links.map(link => link.textContent).filter(Boolean));
     }
 
-    function collectDomPhotos() {
-        const urls = [];
-        const selectors = [
-            'main img[src]',
-            '[class*="photo"] img[src]',
-            '[class*="gallery"] img[src]',
-            '[data-testid*="photo"] img[src]',
-            '[data-testid*="gallery"] img[src]',
-        ];
+    function isLikelyItemPhotoElement(image, itemId = '') {
+        if (!(image instanceof HTMLImageElement)) return false;
 
-        for (const selector of selectors) {
-            for (const image of document.querySelectorAll(selector)) {
-                const candidate = image.currentSrc || image.src || '';
-                const width = image.naturalWidth || image.width || 0;
-                const height = image.naturalHeight || image.height || 0;
-                if (width >= 120 || height >= 120) urls.push(candidate);
-            }
+        const width = image.naturalWidth || image.width || 0;
+        const height = image.naturalHeight || image.height || 0;
+        if (width < MIN_PHOTO_DIMENSION || height < MIN_PHOTO_DIMENSION) return false;
+
+        const anchorHref = normalizeUrl(image.closest('a[href]')?.getAttribute('href') || '');
+        if (anchorHref) {
+            if (/\/member\/|\/catalog\/|\/search\//i.test(anchorHref)) return false;
+            const linkedItemId = anchorHref.match(/\/items\/(\d+)/)?.[1] || '';
+            if (linkedItemId && itemId && linkedItemId !== itemId) return false;
         }
 
-        return dedupeUrls(urls);
+        const contextText = [
+            image.closest('[data-testid]')?.getAttribute('data-testid') || '',
+            image.closest('[class]')?.className || '',
+            image.closest('[aria-label]')?.getAttribute('aria-label') || '',
+        ].join(' ').toLowerCase();
+
+        if (/seller|profile|avatar|member|recommend|similar|suggest|banner|logo|icon/.test(contextText)) return false;
+        if (/gallery|photo|image|carousel|swiper|media/.test(contextText)) return true;
+
+        return false;
+    }
+
+    function collectDomPhotos(itemId = '') {
+        const candidates = [];
+        const seen = new Set();
+
+        for (const image of document.querySelectorAll('img[src]')) {
+            if (!isLikelyItemPhotoElement(image, itemId)) continue;
+
+            const url = normalizeUrl(image.currentSrc || image.src || '');
+            if (!url || seen.has(url)) continue;
+            seen.add(url);
+
+            const width = image.naturalWidth || image.width || 0;
+            const height = image.naturalHeight || image.height || 0;
+            candidates.push({
+                url,
+                area: width * height,
+            });
+        }
+
+        candidates.sort((left, right) => right.area - left.area);
+        return candidates.map(candidate => candidate.url);
     }
 
     function collectSellerAvatar() {
@@ -508,7 +575,8 @@
         const bestCandidate = extractBestStructuredCandidate(jsonScripts.parsed);
         const definitionListData = collectDefinitionListData();
         const breadcrumbs = collectBreadcrumbs();
-        const domPhotos = collectDomPhotos();
+        const itemId = getItemId();
+        const domPhotos = collectDomPhotos(itemId);
         const sellerAvatar = collectSellerAvatar();
 
         const metaTitle = contentFromMeta('og:title') || contentFromMeta('twitter:title', 'name');
@@ -517,11 +585,30 @@
         const structuredProduct = normalizedJsonLd.product || {};
         const structuredOffer = normalizedJsonLd.offer || {};
         const structuredSeller = normalizedJsonLd.seller || {};
+        const primaryStructuredPhotos = dedupeUrls([
+            ...normalizeImageCandidates(bestCandidate?.photos),
+            ...normalizeImageCandidates(bestCandidate?.photo),
+            ...normalizeImageCandidates(structuredProduct.image),
+        ]);
+        const secondaryStructuredPhotos = dedupeUrls([
+            ...primaryStructuredPhotos,
+            ...normalizeImageCandidates(bestCandidate?.images),
+            ...normalizeImageCandidates(bestCandidate?.image),
+            metaImage,
+        ]);
+        const usesStructuredPhotoSet = primaryStructuredPhotos.length > 0;
+        const candidatePhotoSources = usesStructuredPhotoSet
+            ? secondaryStructuredPhotos
+            : secondaryStructuredPhotos.concat(domPhotos);
+        const filteredPhotos = filterItemPhotoUrls(candidatePhotoSources, {
+            itemId,
+            sellerAvatarUrl: sellerAvatar,
+        });
 
         const item = {
             archivedAt: new Date().toISOString(),
             snapshotVersion: SNAPSHOT_VERSION,
-            itemId: getItemId(),
+            itemId,
             pageUrl: window.location.href,
             canonicalUrl: hrefFromSelectors(['link[rel="canonical"]']) || window.location.href,
             pageTitle: cleanText(document.title),
@@ -631,15 +718,7 @@
                 cleanText(structuredProduct.releaseDate),
                 cleanText(document.querySelector('time')?.getAttribute('datetime') || ''),
             ])[0] || '',
-            photos: dedupeUrls([
-                ...normalizeImageCandidates(bestCandidate?.photos),
-                ...normalizeImageCandidates(bestCandidate?.photo),
-                ...normalizeImageCandidates(bestCandidate?.images),
-                ...normalizeImageCandidates(bestCandidate?.image),
-                ...normalizeImageCandidates(structuredProduct.image),
-                metaImage,
-                ...domPhotos,
-            ]),
+            photos: dedupeUrls(filteredPhotos),
             breadcrumbs,
             attributes: definitionListData,
         };
@@ -662,6 +741,8 @@
                 bestCandidate,
                 sellerAvatar,
                 domPhotos,
+                primaryStructuredPhotos,
+                secondaryStructuredPhotos,
                 pageHtml: document.documentElement.outerHTML,
                 locationHref: window.location.href,
                 userAgent: navigator.userAgent,
@@ -709,6 +790,7 @@
                     method: 'GET',
                     url: absoluteUrl,
                     responseType: 'blob',
+                    timeout: ASSET_REQUEST_TIMEOUT_MS,
                     onload: response => {
                         if (response.status >= 200 && response.status < 300 && response.response) {
                             resolve({
@@ -725,14 +807,44 @@
             });
         }
 
-        return fetch(absoluteUrl, { credentials: 'include' })
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        let timeoutId = 0;
+        const clearRequestTimeout = () => {
+            if (timeoutId) {
+                window.clearTimeout(timeoutId);
+                timeoutId = 0;
+            }
+        };
+        const requestPromise = fetch(absoluteUrl, {
+            credentials: 'include',
+            signal: controller?.signal,
+        })
             .then(response => {
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.blob().then(blob => ({
                     blob,
                     contentType: response.headers.get('content-type') || blob.type || '',
                 }));
+            })
+            .catch(error => {
+                if (error?.name === 'AbortError') throw new Error('Request timeout');
+                throw error;
             });
+
+        return new Promise((resolve, reject) => {
+            timeoutId = window.setTimeout(() => {
+                if (controller) controller.abort();
+                reject(new Error('Request timeout'));
+            }, ASSET_REQUEST_TIMEOUT_MS);
+            requestPromise
+                .then(value => {
+                    clearRequestTimeout();
+                    resolve(value);
+                }, error => {
+                    clearRequestTimeout();
+                    reject(error);
+                });
+        });
     }
 
     function triggerDownload(blob, filename) {
@@ -853,6 +965,8 @@
             bestCandidate: raw.bestCandidate,
             sellerAvatar: raw.sellerAvatar,
             domPhotos: raw.domPhotos,
+            primaryStructuredPhotos: raw.primaryStructuredPhotos,
+            secondaryStructuredPhotos: raw.secondaryStructuredPhotos,
         }));
         rawFolder.file('download-log.json', prettyJson(downloadLog));
         rawFolder.file('page.html', raw.pageHtml);
@@ -863,8 +977,16 @@
             snapshotVersion: SNAPSHOT_VERSION,
         }));
 
+        let lastReportedPercentage = -ZIP_PROGRESS_STEP;
         setStatus('Generating ZIP…');
-        const blob = await zip.generateAsync({ type: 'blob' });
+        const blob = await zip.generateAsync({ type: 'blob' }, metadata => {
+            if (!metadata) return;
+            const percent = Math.floor(metadata.percent || 0);
+            if (percent === 100 || percent >= lastReportedPercentage + ZIP_PROGRESS_STEP) {
+                lastReportedPercentage = percent;
+                setStatus(`Generating ZIP… ${percent}%`);
+            }
+        });
         triggerDownload(blob, `${archiveName}.zip`);
         setStatus(`Saved ${archiveName}.zip`);
     }
