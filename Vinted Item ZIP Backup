@@ -29,6 +29,7 @@
     const TITLE_ID = 'vinted-item-zip-backup-title';
     const SNAPSHOT_VERSION = '1.0.5';
     const ASSET_REQUEST_TIMEOUT_MS = 20000;
+    const MIN_PHOTO_DIMENSION = 160;
     const ZIP_PROGRESS_STEP = 5;
     const state = {
         busy: false,
@@ -481,7 +482,7 @@
 
         const width = image.naturalWidth || image.width || 0;
         const height = image.naturalHeight || image.height || 0;
-        if (width < 160 && height < 160) return false;
+        if (width < MIN_PHOTO_DIMENSION && height < MIN_PHOTO_DIMENSION) return false;
 
         const anchorHref = normalizeUrl(image.closest('a[href]')?.getAttribute('href') || '');
         if (anchorHref) {
@@ -592,8 +593,11 @@
             ...normalizeImageCandidates(bestCandidate?.image),
             metaImage,
         ]);
-        const photoSources = primaryStructuredPhotos.length ? secondaryStructuredPhotos : secondaryStructuredPhotos.concat(domPhotos);
-        const filteredPhotos = filterItemPhotoUrls(photoSources, {
+        const usesStructuredPhotoSet = primaryStructuredPhotos.length > 0;
+        const candidatePhotoSources = usesStructuredPhotoSet
+            ? secondaryStructuredPhotos
+            : secondaryStructuredPhotos.concat(domPhotos);
+        const filteredPhotos = filterItemPhotoUrls(candidatePhotoSources, {
             itemId,
             sellerAvatarUrl: sellerAvatar,
         });
@@ -801,9 +805,8 @@
         }
 
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        const timeoutId = controller ? window.setTimeout(() => controller.abort(), ASSET_REQUEST_TIMEOUT_MS) : 0;
-
-        return fetch(absoluteUrl, {
+        let timeoutId = 0;
+        const requestPromise = fetch(absoluteUrl, {
             credentials: 'include',
             signal: controller?.signal,
         })
@@ -817,10 +820,17 @@
             .catch(error => {
                 if (error?.name === 'AbortError') throw new Error('Request timeout');
                 throw error;
-            })
-            .finally(() => {
-                if (timeoutId) window.clearTimeout(timeoutId);
             });
+        const timeoutPromise = new Promise((resolve, reject) => {
+            timeoutId = window.setTimeout(() => {
+                if (controller) controller.abort();
+                reject(new Error('Request timeout'));
+            }, ASSET_REQUEST_TIMEOUT_MS);
+        });
+
+        return Promise.race([requestPromise, timeoutPromise]).finally(() => {
+            if (timeoutId) window.clearTimeout(timeoutId);
+        });
     }
 
     function triggerDownload(blob, filename) {
@@ -956,6 +966,7 @@
         let lastReportedProgress = -ZIP_PROGRESS_STEP;
         setStatus('Generating ZIP…');
         const blob = await zip.generateAsync({ type: 'blob' }, metadata => {
+            if (!metadata) return;
             const percent = Math.max(0, Math.min(100, Math.floor(metadata?.percent || 0)));
             if (percent === 100 || percent >= lastReportedProgress + ZIP_PROGRESS_STEP) {
                 lastReportedProgress = percent;
