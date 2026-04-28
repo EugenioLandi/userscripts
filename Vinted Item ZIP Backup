@@ -309,7 +309,8 @@
                 || /avatar|profile|member|seller|logo|icon/.test(search);
             if (looksLikeAvatar) continue;
 
-            if (itemId && /\/items\/(\d+)/.test(pathname) && !pathname.includes(`/items/${itemId}`)) continue;
+            const matchedItemId = pathname.match(/\/items\/(\d+)/)?.[1] || '';
+            if (itemId && matchedItemId && matchedItemId !== itemId) continue;
 
             results.push(normalized);
         }
@@ -806,11 +807,18 @@
 
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         let timeoutId = 0;
+        const clearRequestTimeout = () => {
+            if (timeoutId) {
+                window.clearTimeout(timeoutId);
+                timeoutId = 0;
+            }
+        };
         const requestPromise = fetch(absoluteUrl, {
             credentials: 'include',
             signal: controller?.signal,
         })
             .then(response => {
+                clearRequestTimeout();
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.blob().then(blob => ({
                     blob,
@@ -818,6 +826,7 @@
                 }));
             })
             .catch(error => {
+                clearRequestTimeout();
                 if (error?.name === 'AbortError') throw new Error('Request timeout');
                 throw error;
             });
@@ -828,9 +837,7 @@
             }, ASSET_REQUEST_TIMEOUT_MS);
         });
 
-        return Promise.race([requestPromise, timeoutPromise]).finally(() => {
-            if (timeoutId) window.clearTimeout(timeoutId);
-        });
+        return Promise.race([requestPromise, timeoutPromise]).finally(clearRequestTimeout);
     }
 
     function triggerDownload(blob, filename) {
@@ -967,7 +974,7 @@
         setStatus('Generating ZIP…');
         const blob = await zip.generateAsync({ type: 'blob' }, metadata => {
             if (!metadata) return;
-            const percent = Math.max(0, Math.min(100, Math.floor(metadata?.percent || 0)));
+            const percent = Math.floor(metadata.percent || 0);
             if (percent === 100 || percent >= lastReportedProgress + ZIP_PROGRESS_STEP) {
                 lastReportedProgress = percent;
                 setStatus(`Generating ZIP… ${percent}%`);
