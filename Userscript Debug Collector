@@ -1,0 +1,597 @@
+// ==UserScript==
+// @name         Userscript Debug Collector
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Collect browser-side diagnostics for this repository's userscripts and export a reviewable report
+// @author       You
+// @match        https://*.overleaf.com/*
+// @match        https://github.com/*
+// @match        https://claude.ai/*
+// @match        https://*.reddit.com/*
+// @match        https://arxiv.org/*
+// @match        *://www.editorialedomani.it/*
+// @match        https://*.m.wikipedia.org/*
+// @match        http://*.m.wikipedia.org/*
+// @include      https://vinted.*/*
+// @include      https://www.vinted.*/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Userscript%20Debug%20Collector
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Userscript%20Debug%20Collector
+// @grant        none
+// @run-at       document-start
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__userscriptDebugCollectorInitialized) return;
+    window.__userscriptDebugCollectorInitialized = true;
+
+    const VERSION = '1.0.0';
+    const PANEL_ID = 'userscript-debug-collector-panel';
+    const OUTPUT_ID = 'userscript-debug-collector-output';
+    const NOTE_ID = 'userscript-debug-collector-note';
+    const STATUS_ID = 'userscript-debug-collector-status';
+    const MAX_LOG_ENTRIES = 80;
+    const MAX_SAMPLES_PER_PROBE = 3;
+    const MAX_TEXT_LENGTH = 120;
+    const NOTE_STORAGE_KEY = 'userscript_debug_collector_note';
+    const GENERIC_STORAGE_KEY_PATTERN = /(copilot|claude|overleaf|vinted|arxiv|reddit|domani|userscript)/i;
+
+    const state = {
+        console: [],
+        errors: [],
+        network: [],
+        routes: [],
+        lastReport: '',
+    };
+
+    const knownScripts = [
+        { name: 'Overleaf Compile Timer', flag: '__overleafCompileTimerInitialized', host: /overleaf\.com$/i },
+        { name: 'Overleaf GitHub Shortcut', flag: '__overleafGitHubShortcutInitialized', host: /overleaf\.com$/i },
+        { name: 'Overleaf New Command Builder', flag: '__overleafNewCommandBuilderInitialized', host: /overleaf\.com$/i },
+        { name: 'Overleaf Notes and Checklist', flag: '__overleafNotesChecklistInitialized', host: /overleaf\.com$/i },
+        { name: 'Overleaf ZIP Download with Date', flag: '__overleafCustomDownloadsInitialized', host: /overleaf\.com$/i },
+        { name: 'GitHub Copilot Usage Display', flag: '__copilotUsageDisplayInitialized', host: /^github\.com$/i },
+        { name: 'GitHub Copilot Model Multipliers', flag: '__copilotModelMultipliersInitialized', host: /^github\.com$/i },
+        { name: 'Claude Usage Monitor', flag: '__claudeUsageMonitorInitialized', host: /^claude\.ai$/i },
+        { name: 'Vinted Item ZIP Backup', flag: '__vintedItemZipBackupInitialized', host: /(^|\.)vinted\./i },
+        { name: 'Force font Domani', flag: '__domaniFontForceInitialized', host: /^www\.editorialedomani\.it$/i },
+    ];
+
+    const siteProfiles = [
+        {
+            id: 'generic',
+            matches: () => true,
+            probes: [
+                { label: 'Alerts', selector: '[role="alert"], [aria-live="assertive"], .flash-error, .error, .toast-error' },
+                { label: 'Dialogs', selector: '[role="dialog"], dialog' },
+                { label: 'Buttons', selector: 'button, [role="button"]' },
+                { label: 'Links', selector: 'a[href]' },
+            ],
+        },
+        {
+            id: 'overleaf',
+            matches: () => /overleaf\.com$/i.test(location.hostname),
+            probes: [
+                { label: 'Download PDF controls', selector: 'a[aria-label="Download PDF"], button[aria-label="Download PDF"], [role="button"][aria-label="Download PDF"]' },
+                { label: 'Custom ZIP button', selector: '.custom-zip-download-btn' },
+                {
+                    label: 'Compile buttons',
+                    collect: () => [...document.querySelectorAll('button')].filter(button => /recompile|compile/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`)),
+                },
+                { label: 'Rail tabs wrapper', selector: '.ide-rail-tabs-wrapper' },
+                { label: 'Rail tab content', selector: '.ide-rail-content .ide-rail-tab-content' },
+                { label: 'GitHub-looking actions', selector: 'a[href*="github"], button[aria-label*="github" i], [data-testid*="github" i], [title*="github" i]' },
+            ],
+        },
+        {
+            id: 'github',
+            matches: () => location.hostname === 'github.com',
+            probes: [
+                { label: 'Copilot subpage nav', selector: '[data-testid="copilot-subpage-nav"], [data-testid*="copilot-subpage-nav"]' },
+                { label: 'Page header actions', selector: '[data-testid*="page-header-actions"]' },
+                { label: 'Usage progressbars', selector: '[role="progressbar"][aria-valuenow]' },
+                { label: 'Model selectors', selector: '[data-testid*="model"], [data-testid*="model-selector"], [data-testid*="model-picker"], [aria-label*="model" i], [title*="model" i]' },
+                { label: 'Menu triggers', selector: 'button[aria-haspopup], summary, [aria-haspopup="menu"]' },
+            ],
+        },
+        {
+            id: 'claude',
+            matches: () => location.hostname === 'claude.ai',
+            probes: [
+                { label: 'Main containers', selector: 'main, [role="main"], [data-testid*="chat"], [data-testid*="usage"]' },
+            ],
+        },
+        {
+            id: 'vinted',
+            matches: () => /(^|\.)vinted\./i.test(location.hostname),
+            probes: [
+                { label: 'Breadcrumb links', selector: 'nav[aria-label*="breadcrumb" i] a, nav ol a, [data-testid*="breadcrumb"] a' },
+                { label: 'Page images', selector: 'img[src]' },
+                { label: 'Item title candidates', selector: 'h1, [data-testid*="title"]' },
+            ],
+        },
+        {
+            id: 'arxiv',
+            matches: () => location.hostname === 'arxiv.org',
+            probes: [
+                { label: 'PDF links', selector: 'a[href*="/pdf/"]' },
+                { label: 'Author links', selector: 'div.authors a, meta[name="citation_author"]' },
+            ],
+        },
+    ];
+
+    function normalizeText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function sanitizeText(value, maxLength = MAX_TEXT_LENGTH) {
+        return normalizeText(value)
+            .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[uuid]')
+            .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[token]')
+            .slice(0, maxLength);
+    }
+
+    function sanitizeUrl(value) {
+        try {
+            const url = new URL(String(value), location.href);
+            return `${url.origin}${url.pathname}`;
+        } catch {
+            return sanitizeText(value);
+        }
+    }
+
+    function serialiseError(error) {
+        if (!error) return null;
+        return {
+            name: sanitizeText(error.name || 'Error'),
+            message: sanitizeText(error.message || String(error)),
+            stack: sanitizeText(String(error.stack || '').split('\n').slice(0, 4).join(' | '), 300),
+        };
+    }
+
+    function formatConsoleArg(value) {
+        if (value instanceof Error) return serialiseError(value);
+        if (typeof value === 'string') return sanitizeText(value, 200);
+        if (value && typeof value === 'object') {
+            try {
+                return sanitizeText(JSON.stringify(value), 200);
+            } catch {
+                return sanitizeText(Object.prototype.toString.call(value), 200);
+            }
+        }
+        return sanitizeText(String(value), 200);
+    }
+
+    function pushLimited(list, entry) {
+        list.push(entry);
+        if (list.length > MAX_LOG_ENTRIES) list.splice(0, list.length - MAX_LOG_ENTRIES);
+    }
+
+    function isVisible(element) {
+        return Boolean(element && element.isConnected && (element.getClientRects().length || element.offsetParent));
+    }
+
+    function describeElement(element) {
+        if (!(element instanceof Element)) return null;
+
+        const descriptor = {
+            tag: element.tagName.toLowerCase(),
+        };
+
+        if (element.id) descriptor.id = element.id;
+        if (element.classList.length) descriptor.classes = [...element.classList].slice(0, 3);
+
+        const role = element.getAttribute('role');
+        const testId = element.getAttribute('data-testid');
+        const ariaLabel = element.getAttribute('aria-label');
+        const title = element.getAttribute('title');
+        const href = element.getAttribute('href');
+        const src = element.getAttribute('src');
+        const text = sanitizeText(
+            ariaLabel ||
+            title ||
+            element.getAttribute('value') ||
+            element.textContent ||
+            element.getAttribute('content') ||
+            '',
+        );
+
+        if (role) descriptor.role = role;
+        if (testId) descriptor.testId = sanitizeText(testId);
+        if (ariaLabel) descriptor.ariaLabel = sanitizeText(ariaLabel);
+        if (title) descriptor.title = sanitizeText(title);
+        if (href) descriptor.href = sanitizeUrl(href);
+        if (src) descriptor.src = sanitizeUrl(src);
+        if (text) descriptor.text = text;
+        descriptor.visible = isVisible(element);
+        return descriptor;
+    }
+
+    function collectProbe(probe) {
+        let elements = [];
+
+        try {
+            elements = probe.collect ? probe.collect() : [...document.querySelectorAll(probe.selector)];
+        } catch (error) {
+            return {
+                label: probe.label,
+                error: sanitizeText(error.message || String(error)),
+            };
+        }
+
+        const samples = elements
+            .slice(0, MAX_SAMPLES_PER_PROBE)
+            .map(describeElement)
+            .filter(Boolean);
+
+        return {
+            label: probe.label,
+            count: elements.length,
+            visibleCount: elements.filter(isVisible).length,
+            samples,
+        };
+    }
+
+    function getActiveProfiles() {
+        return siteProfiles
+            .filter(profile => profile.matches())
+            .map(profile => ({
+                id: profile.id,
+                probes: profile.probes.map(collectProbe),
+            }));
+    }
+
+    function getKnownScriptStatus() {
+        return knownScripts
+            .filter(script => script.host.test(location.hostname))
+            .map(script => ({
+                name: script.name,
+                flag: script.flag,
+                initialized: Boolean(window[script.flag]),
+            }));
+    }
+
+    function getRelevantStorageKeys() {
+        try {
+            return [...Array(localStorage.length).keys()]
+                .map(index => localStorage.key(index))
+                .filter(Boolean)
+                .filter(key => GENERIC_STORAGE_KEY_PATTERN.test(key))
+                .sort();
+        } catch {
+            return [];
+        }
+    }
+
+    function getDomSummary() {
+        return {
+            readyState: document.readyState,
+            title: sanitizeText(document.title, 160),
+            buttons: document.querySelectorAll('button, [role="button"]').length,
+            links: document.querySelectorAll('a[href]').length,
+            dialogs: document.querySelectorAll('[role="dialog"], dialog').length,
+            iframes: document.querySelectorAll('iframe').length,
+            scripts: document.scripts.length,
+        };
+    }
+
+    function buildReport() {
+        const note = document.getElementById(NOTE_ID)?.value || '';
+        return {
+            collectorVersion: VERSION,
+            createdAt: new Date().toISOString(),
+            note: sanitizeText(note, 500),
+            page: {
+                url: sanitizeUrl(location.href),
+                host: location.hostname,
+                path: location.pathname,
+                title: sanitizeText(document.title, 160),
+                referrer: sanitizeUrl(document.referrer || ''),
+                readyState: document.readyState,
+                visibilityState: document.visibilityState,
+                viewport: {
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    devicePixelRatio: window.devicePixelRatio,
+                },
+                userAgent: sanitizeText(navigator.userAgent, 220),
+            },
+            domSummary: getDomSummary(),
+            knownScripts: getKnownScriptStatus(),
+            storageKeys: getRelevantStorageKeys(),
+            selectorProfiles: getActiveProfiles(),
+            recentEvents: {
+                console: state.console.slice(-20),
+                errors: state.errors.slice(-20),
+                network: state.network.slice(-20),
+                routes: state.routes.slice(-20),
+            },
+        };
+    }
+
+    function updateStatus(message, isError = false) {
+        const status = document.getElementById(STATUS_ID);
+        if (!status) return;
+        status.textContent = message;
+        status.style.color = isError ? '#cf222e' : '#57606a';
+    }
+
+    function renderReport() {
+        const output = document.getElementById(OUTPUT_ID);
+        if (!output) return '';
+        const report = buildReport();
+        const text = JSON.stringify(report, null, 2);
+        output.value = text;
+        state.lastReport = text;
+        updateStatus('Snapshot updated.');
+        return text;
+    }
+
+    async function copyReport() {
+        const output = document.getElementById(OUTPUT_ID);
+        if (!output) return;
+        const text = output.value || renderReport();
+
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                output.focus();
+                output.select();
+                document.execCommand('copy');
+            }
+            updateStatus('Report copied to clipboard.');
+        } catch (error) {
+            updateStatus(`Copy failed: ${sanitizeText(error.message || String(error))}`, true);
+        }
+    }
+
+    function downloadReport() {
+        const text = state.lastReport || renderReport();
+        const blob = new Blob([text], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        const safeHost = location.hostname.replace(/[^a-z0-9.-]+/gi, '-');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        anchor.href = url;
+        anchor.download = `userscript-debug-${safeHost}-${timestamp}.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        updateStatus('Report downloaded.');
+    }
+
+    function restoreNote() {
+        try {
+            const saved = localStorage.getItem(NOTE_STORAGE_KEY);
+            if (saved) {
+                const note = document.getElementById(NOTE_ID);
+                if (note) note.value = saved;
+            }
+        } catch {
+            // Ignore storage failures.
+        }
+    }
+
+    function persistNote() {
+        const note = document.getElementById(NOTE_ID);
+        if (!note) return;
+        try {
+            localStorage.setItem(NOTE_STORAGE_KEY, note.value);
+        } catch {
+            // Ignore storage failures.
+        }
+    }
+
+    function buildPanel() {
+        if (!document.body || document.getElementById(PANEL_ID)) return;
+
+        const panel = document.createElement('section');
+        panel.id = PANEL_ID;
+        panel.style.cssText = [
+            'position:fixed',
+            'right:16px',
+            'bottom:16px',
+            'z-index:2147483647',
+            'width:min(420px, calc(100vw - 32px))',
+            'max-height:calc(100vh - 32px)',
+            'display:flex',
+            'flex-direction:column',
+            'gap:8px',
+            'padding:12px',
+            'background:#ffffff',
+            'color:#24292f',
+            'border:1px solid #d0d7de',
+            'border-radius:12px',
+            'box-shadow:0 12px 28px rgba(0,0,0,.18)',
+            'font:12px/1.4 system-ui,sans-serif',
+        ].join(';');
+
+        panel.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <strong>Userscript debug collector</strong>
+                <span style="color:#57606a;">v${VERSION}</span>
+            </div>
+            <div style="color:#57606a;">Reload the page, reproduce the issue, then review and share the report below.</div>
+            <textarea id="${NOTE_ID}" rows="2" placeholder="Optional note: what broke, what you clicked, expected result..." style="width:100%;resize:vertical;padding:8px;border:1px solid #d0d7de;border-radius:8px;font:inherit;"></textarea>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                <button type="button" data-action="snapshot" style="padding:6px 10px;border:1px solid #d0d7de;border-radius:8px;background:#f6f8fa;cursor:pointer;">Snapshot</button>
+                <button type="button" data-action="copy" style="padding:6px 10px;border:1px solid #d0d7de;border-radius:8px;background:#f6f8fa;cursor:pointer;">Copy</button>
+                <button type="button" data-action="download" style="padding:6px 10px;border:1px solid #d0d7de;border-radius:8px;background:#f6f8fa;cursor:pointer;">Download</button>
+            </div>
+            <div id="${STATUS_ID}" style="color:#57606a;">Queries and hashes are stripped from URLs. Review the report before sharing.</div>
+            <textarea id="${OUTPUT_ID}" rows="16" spellcheck="false" style="width:100%;resize:vertical;padding:8px;border:1px solid #d0d7de;border-radius:8px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;"></textarea>
+        `;
+
+        panel.querySelector('[data-action="snapshot"]')?.addEventListener('click', renderReport);
+        panel.querySelector('[data-action="copy"]')?.addEventListener('click', copyReport);
+        panel.querySelector('[data-action="download"]')?.addEventListener('click', downloadReport);
+        panel.querySelector(`#${NOTE_ID}`)?.addEventListener('input', persistNote);
+
+        document.body.appendChild(panel);
+        restoreNote();
+        renderReport();
+    }
+
+    function trackConsole() {
+        const originalWarn = console.warn.bind(console);
+        const originalError = console.error.bind(console);
+
+        console.warn = function (...args) {
+            pushLimited(state.console, {
+                level: 'warn',
+                at: new Date().toISOString(),
+                args: args.map(formatConsoleArg),
+            });
+            return originalWarn(...args);
+        };
+
+        console.error = function (...args) {
+            pushLimited(state.console, {
+                level: 'error',
+                at: new Date().toISOString(),
+                args: args.map(formatConsoleArg),
+            });
+            return originalError(...args);
+        };
+    }
+
+    function trackRuntimeErrors() {
+        window.addEventListener('error', event => {
+            pushLimited(state.errors, {
+                type: 'error',
+                at: new Date().toISOString(),
+                message: sanitizeText(event.message || ''),
+                source: sanitizeUrl(event.filename || ''),
+                line: event.lineno || 0,
+                column: event.colno || 0,
+                error: serialiseError(event.error),
+            });
+        });
+
+        window.addEventListener('unhandledrejection', event => {
+            pushLimited(state.errors, {
+                type: 'unhandledrejection',
+                at: new Date().toISOString(),
+                reason: formatConsoleArg(event.reason),
+            });
+        });
+    }
+
+    function trackNetwork() {
+        const originalFetch = window.fetch?.bind(window);
+        if (originalFetch) {
+            window.fetch = async function (...args) {
+                const request = args[0];
+                const url = request instanceof Request ? request.url : request;
+                const method = request instanceof Request ? request.method : (args[1]?.method || 'GET');
+
+                try {
+                    const response = await originalFetch(...args);
+                    if (!response.ok) {
+                        pushLimited(state.network, {
+                            type: 'fetch',
+                            at: new Date().toISOString(),
+                            method: sanitizeText(method),
+                            url: sanitizeUrl(url),
+                            status: response.status,
+                        });
+                    }
+                    return response;
+                } catch (error) {
+                    pushLimited(state.network, {
+                        type: 'fetch',
+                        at: new Date().toISOString(),
+                        method: sanitizeText(method),
+                        url: sanitizeUrl(url),
+                        error: serialiseError(error),
+                    });
+                    throw error;
+                }
+            };
+        }
+
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            this.__userscriptDebugCollectorMethod = sanitizeText(method || 'GET');
+            this.__userscriptDebugCollectorUrl = sanitizeUrl(url);
+            return originalOpen.call(this, method, url, ...rest);
+        };
+
+        XMLHttpRequest.prototype.send = function (...args) {
+            const finalize = () => {
+                if (this.status >= 400 || this.status === 0) {
+                    pushLimited(state.network, {
+                        type: 'xhr',
+                        at: new Date().toISOString(),
+                        method: this.__userscriptDebugCollectorMethod || 'GET',
+                        url: this.__userscriptDebugCollectorUrl || '',
+                        status: this.status,
+                    });
+                }
+            };
+
+            this.addEventListener('loadend', finalize, { once: true });
+            this.addEventListener('error', () => {
+                pushLimited(state.network, {
+                    type: 'xhr',
+                    at: new Date().toISOString(),
+                    method: this.__userscriptDebugCollectorMethod || 'GET',
+                    url: this.__userscriptDebugCollectorUrl || '',
+                    status: this.status || 0,
+                });
+            }, { once: true });
+
+            return originalSend.apply(this, args);
+        };
+    }
+
+    function trackRoutes() {
+        function recordRoute(type) {
+            pushLimited(state.routes, {
+                type,
+                at: new Date().toISOString(),
+                url: sanitizeUrl(location.href),
+            });
+        }
+
+        const originalPushState = history.pushState.bind(history);
+        const originalReplaceState = history.replaceState.bind(history);
+
+        history.pushState = function (...args) {
+            const result = originalPushState(...args);
+            recordRoute('pushState');
+            return result;
+        };
+
+        history.replaceState = function (...args) {
+            const result = originalReplaceState(...args);
+            recordRoute('replaceState');
+            return result;
+        };
+
+        window.addEventListener('popstate', () => recordRoute('popstate'));
+        window.addEventListener('hashchange', () => recordRoute('hashchange'));
+    }
+
+    function initUiWhenReady() {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', buildPanel, { once: true });
+            window.addEventListener('load', renderReport, { once: true });
+            return;
+        }
+
+        buildPanel();
+        window.setTimeout(renderReport, 200);
+    }
+
+    trackConsole();
+    trackRuntimeErrors();
+    trackNetwork();
+    trackRoutes();
+    initUiWhenReady();
+})();

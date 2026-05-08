@@ -134,6 +134,20 @@ If you want a manual refresh:
 - **Site:** Reddit.
 - **Purpose:** restores a more classic Reddit experience.
 
+### Debugging
+
+#### Userscript Debug Collector
+- **Site:** the same sites covered by this repository's userscripts (Overleaf, GitHub, Claude, Vinted, Reddit, Wikipedia mobile, arXiv, and Domani).
+- **Purpose:** collects browser-side diagnostics that can be copied or downloaded when a userscript is not behaving correctly.
+- **Best for:** reporting selector mismatches, runtime errors, failed network calls, and which repository userscripts actually initialized on the current page.
+
+**How to use**
+1. Install the debug collector alongside the userscript that is failing.
+2. Reload the target page so the collector can record early page and userscript errors.
+3. Reproduce the problem.
+4. Use the floating panel to add a short note, refresh the snapshot, and then copy or download the generated JSON report.
+5. Review the report before sharing it. Query strings and URL hashes are stripped automatically, but page labels may still need manual redaction in some cases.
+
 ### Vinted
 
 #### Vinted Item ZIP Backup
