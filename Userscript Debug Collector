@@ -77,7 +77,10 @@
                 { label: 'Custom ZIP button', selector: '.custom-zip-download-btn' },
                 {
                     label: 'Compile buttons',
-                    collect: () => [...document.querySelectorAll('button')].filter(button => /recompile|compile/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`)),
+                    collect: () => [...document.querySelectorAll('button')].filter(button => {
+                        const label = normalizeText(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`);
+                        return Boolean(label) && /\b(?:recompile|compile)\b/i.test(label);
+                    }),
                 },
                 { label: 'Rail tabs wrapper', selector: '.ide-rail-tabs-wrapper' },
                 { label: 'Rail tab content', selector: '.ide-rail-content .ide-rail-tab-content' },
@@ -353,7 +356,7 @@
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         const safeHost = location.hostname.replace(/[^a-z0-9.-]+/gi, '-');
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace(/\.\d+Z$/, 'Z');
         anchor.href = url;
         anchor.download = `userscript-debug-${safeHost}-${timestamp}.json`;
         document.body.appendChild(anchor);
@@ -524,7 +527,7 @@
 
         XMLHttpRequest.prototype.send = function (...args) {
             const finalize = () => {
-                if (this.status >= 400 || this.status === 0) {
+                if (this.status >= 400) {
                     pushLimited(state.network, {
                         type: 'xhr',
                         at: new Date().toISOString(),
@@ -538,7 +541,16 @@
             this.addEventListener('loadend', finalize, { once: true });
             this.addEventListener('error', () => {
                 pushLimited(state.network, {
-                    type: 'xhr',
+                    type: 'xhr-error',
+                    at: new Date().toISOString(),
+                    method: this.__userscriptDebugCollectorMethod || 'GET',
+                    url: this.__userscriptDebugCollectorUrl || '',
+                    status: this.status || 0,
+                });
+            }, { once: true });
+            this.addEventListener('abort', () => {
+                pushLimited(state.network, {
+                    type: 'xhr-abort',
                     at: new Date().toISOString(),
                     method: this.__userscriptDebugCollectorMethod || 'GET',
                     url: this.__userscriptDebugCollectorUrl || '',
