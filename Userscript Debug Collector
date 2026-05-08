@@ -35,6 +35,9 @@
     const MAX_SAMPLES_PER_PROBE = 3;
     const MAX_TEXT_LENGTH = 120;
     const NOTE_STORAGE_KEY = 'userscript_debug_collector_note';
+    const TIMESTAMP_MILLISECONDS_PATTERN = /\.\d+Z$/;
+    const BLOB_URL_REVOKE_DELAY_MS = 1000;
+    const INITIAL_RENDER_DELAY_MS = 200;
     const GENERIC_STORAGE_KEY_PATTERN = /(copilot|claude|overleaf|vinted|arxiv|reddit|domani|userscript)/i;
 
     const state = {
@@ -363,13 +366,13 @@
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         const safeHost = location.hostname.replace(/[^a-z0-9.-]+/gi, '-');
-        const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace(/\.\d+Z$/, 'Z');
+        const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace(TIMESTAMP_MILLISECONDS_PATTERN, 'Z');
         anchor.href = url;
         anchor.download = `userscript-debug-${safeHost}-${timestamp}.json`;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_REVOKE_DELAY_MS);
         updateStatus('Report downloaded.');
     }
 
@@ -605,7 +608,7 @@
         }
 
         buildPanel();
-        window.setTimeout(renderReport, 200);
+        window.setTimeout(renderReport, INITIAL_RENDER_DELAY_MS);
     }
 
     trackConsole();
