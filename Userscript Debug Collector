@@ -339,12 +339,19 @@
         try {
             if (navigator.clipboard?.writeText) {
                 await navigator.clipboard.writeText(text);
+                updateStatus('Report copied to clipboard.');
             } else {
                 output.focus();
                 output.select();
-                document.execCommand('copy');
+                const copied = document.execCommand('copy');
+                updateStatus(
+                    copied
+                        ? 'Report copied with the browser fallback clipboard path.'
+                        : 'Copy fallback was not supported by this browser.',
+                    !copied,
+                );
+                return;
             }
-            updateStatus('Report copied to clipboard.');
         } catch (error) {
             updateStatus(`Copy failed: ${sanitizeText(error.message || String(error))}`, true);
         }
