@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf Notes and Checklist
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
+// @version      2.0.0
 // @description  Add centered Overleaf sidebar buttons for independent floating notes and checklist widgets
 // @author       You
 // @match        https://*.overleaf.com/project/*
@@ -14,166 +14,179 @@
 (function () {
     'use strict';
 
-    if (window.__overleafNotesChecklistInitialized) return;
-    window.__overleafNotesChecklistInitialized = true;
+    // Prevent multiple initializations
+    if (window.__overleafNotesChecklistV2) return;
+    window.__overleafNotesChecklistV2 = true;
 
-    const STYLE_ID = 'overleaf-notes-checklist-style';
-    const BUTTON_ATTR = 'data-overleaf-notes-checklist-button';
-    const WIDGET_ATTR = 'data-overleaf-notes-checklist-widget';
-    const TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
-    const FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
-    const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
-    const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a, label';
-    const DOM_SYNC_DEBOUNCE_MS = 150;
-    const WIDGET_PADDING = 16;
-    const WIDGET_MIN_TOP = 72;
-    const DEFAULT_WIDGET_WIDTH = 360;
-    const DEFAULT_WIDGET_HEIGHT = 360;
-    const MIN_WIDGET_WIDTH = 320;
-    const MIN_WIDGET_HEIGHT = 220;
+    // ===== CONFIGURATION =====
+    const CONFIG = {
+        styleId: 'overleaf-notes-checklist-v2-style',
+        buttonAttr: 'data-onc-button',
+        widgetAttr: 'data-onc-widget',
+        debounceMs: 150,
+        zIndexBase: 100000,
+        widget: {
+            padding: 16,
+            minTop: 72,
+            minWidth: 320,
+            minHeight: 220,
+            defaultWidth: 360,
+            defaultHeight: 360,
+        },
+        selectors: {
+            tabsWrapper: '.ide-rail-tabs-wrapper',
+            fileTreeTab: '[data-rr-ui-event-key="file-tree"]',
+            tabContent: '.ide-rail-content .ide-rail-tab-content',
+            dragIgnore: 'button, input, textarea, select, a, label',
+        },
+    };
 
-    const PANEL_DEFS = [
+    const PANELS = [
         {
             id: 'notes',
             title: 'Local notes',
             subtitle: 'Project notes stored only in this browser',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 11h6"/><path d="M10 15h6"/><path d="M10 19h4"/></svg>',
-            defaultPosition: { x: 120, y: 112 },
-            defaultSize: { width: 360, height: 380 },
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 11h6"/><path d="M10 15h6"/><path d="M10 19h4"/></svg>',
+            defaultX: 120,
+            defaultY: 112,
+            defaultWidth: 360,
+            defaultHeight: 380,
         },
         {
             id: 'checklist',
             title: 'Checklist',
             subtitle: 'Local project tasks stored only in this browser',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M9 17l2 2 4-4"/><path d="M5 6h14"/></svg>',
-            defaultPosition: { x: 520, y: 112 },
-            defaultSize: { width: 380, height: 420 },
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l2 2 4-4"/><path d="M9 17l2 2 4-4"/><path d="M5 6h14"/></svg>',
+            defaultX: 520,
+            defaultY: 112,
+            defaultWidth: 380,
+            defaultHeight: 420,
         },
     ];
 
+    // ===== STATE =====
     const state = {
         widgets: new Map(),
-        refreshTimer: null,
+        buttons: new Map(),
+        zIndex: CONFIG.zIndexBase,
+        timers: { sync: null, resize: null },
         observer: null,
-        resizeTimer: null,
-        zIndex: 100000,
         lastHref: window.location.href,
-        lastProjectId: getProjectId(),
+        lastProjectId: null,
     };
 
-    function getProjectId() {
-        const match = window.location.pathname.match(/\/project\/([^/]+)/);
-        return match ? match[1] : null;
-    }
+    // ===== UTILITIES =====
+    const utils = {
+        getProjectId() {
+            const match = window.location.pathname.match(/\/project\/([^/]+)/);
+            return match ? match[1] : null;
+        },
 
-    function getProjectName() {
-        const selectors = [
-            '.ide-redesign-toolbar-project-name',
-            '[data-testid="project-name"]',
-            'input[aria-label="Project name"]',
-            'input[name="projectName"]',
-        ];
-        for (const selector of selectors) {
-            const element = document.querySelector(selector);
-            const value = element?.value || element?.textContent;
-            if (value && value.trim()) return value.trim();
-        }
-        return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
-    }
+        getProjectName() {
+            const selectors = [
+                '.ide-redesign-toolbar-project-name',
+                '[data-testid="project-name"]',
+                'input[aria-label="Project name"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                const val = el?.value || el?.textContent;
+                if (val?.trim()) return val.trim();
+            }
+            return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled';
+        },
 
-    function getProjectStorageScope() {
-        return getProjectId() || `fallback-page:${window.location.pathname}${window.location.search}`;
-    }
+        getStorageScope() {
+            return utils.getProjectId() || `page:${window.location.pathname}`;
+        },
 
-    function getNotesStorageKey() {
-        return `experimental-overleaf-sidebar-local-notepad:${getProjectStorageScope()}`;
-    }
+        clamp(val, min, max) {
+            return Math.max(min, Math.min(max, val));
+        },
 
-    function getChecklistStorageKey() {
-        return `experimental-overleaf-sidebar-checklist:${getProjectStorageScope()}`;
-    }
+        debounce(fn, ms) {
+            let timer = null;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => fn(...args), ms);
+            };
+        },
+    };
 
-    function getPositionStorageKey(panelId) {
-        return `overleaf-notes-checklist:${panelId}:position`;
-    }
+    // ===== STORAGE =====
+    const storage = {
+        get(key, fallback = null) {
+            try {
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : fallback;
+            } catch {
+                return fallback;
+            }
+        },
 
-    function getSizeStorageKey(panelId) {
-        return `overleaf-notes-checklist:${panelId}:size`;
-    }
+        set(key, value) {
+            try {
+                localStorage.setItem(key, JSON.stringify(value));
+            } catch {
+                // Ignore quota errors
+            }
+        },
 
-    function readJson(key, fallback) {
-        try {
-            const parsed = JSON.parse(localStorage.getItem(key) || 'null');
-            return parsed ?? fallback;
-        } catch {
-            return fallback;
-        }
-    }
+        remove(key) {
+            try {
+                localStorage.removeItem(key);
+            } catch {
+                // Ignore
+            }
+        },
 
-    function writeJson(key, value) {
-        try {
-            localStorage.setItem(key, JSON.stringify(value));
-        } catch {
-            // ignore quota errors
-        }
-    }
+        keys: {
+            notes: () => `overleaf-notes:${utils.getStorageScope()}`,
+            checklist: () => `overleaf-checklist:${utils.getStorageScope()}`,
+            position: (panelId) => `overleaf-notes-checklist:${panelId}:pos`,
+            size: (panelId) => `overleaf-notes-checklist:${panelId}:size`,
+        },
+    };
 
-    async function copyText(text) {
-        if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(text);
-            return;
-        }
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', 'readonly');
-        textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
-        document.body.appendChild(textarea);
-        textarea.select();
-        if (typeof document.execCommand === 'function' && document.queryCommandSupported?.('copy') !== false) {
-            document.execCommand('copy');
-        }
-        textarea.remove();
-    }
+    // ===== THEME =====
+    const theme = {
+        get() {
+            return {
+                bg: '#1b222c',
+                fg: '#dbe5f3',
+                border: '#46566f',
+                muted: '#aab6c8',
+                buttonBg: '#273142',
+                hover: '#354258',
+                inputBg: '#2f3a4c',
+                cardBg: '#2f3a4c',
+                activeBg: '#2f3a4c',
+            };
+        },
 
-    function resolveContext() {
-        const tabsWrapper = document.querySelector(TABS_WRAPPER_SELECTOR);
-        const fileTreeButton = tabsWrapper?.querySelector(FILE_TREE_TAB_SELECTOR) || null;
-        const templateButton = fileTreeButton || tabsWrapper?.querySelector('button, [role="tab"]') || null;
-        const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
-        return { tabsWrapper, fileTreeButton, templateButton, tabContent };
-    }
+        apply(element) {
+            const colors = theme.get();
+            Object.entries(colors).forEach(([key, value]) => {
+                element.style.setProperty(`--onc-${key}`, value);
+            });
+        },
+    };
 
-    function detectTheme() {
-        return {
-            bg: '#1b222c',
-            fg: '#dbe5f3',
-            border: '#46566f',
-            muted: '#aab6c8',
-            buttonBg: '#273142',
-            hover: '#354258',
-            inputBg: '#2f3a4c',
-            focus: '#88b7ff',
-            cardBg: '#2f3a4c',
-            activeButtonBg: '#2f3a4c',
-        };
-    }
-
-    function ensureStyle() {
-        if (document.getElementById(STYLE_ID)) return;
+    // ===== STYLES =====
+    function injectStyles() {
+        if (document.getElementById(CONFIG.styleId)) return;
         const style = document.createElement('style');
-        style.id = STYLE_ID;
+        style.id = CONFIG.styleId;
         style.textContent = `
-            [${BUTTON_ATTR}] {
+            [${CONFIG.buttonAttr}] {
                 position: relative;
                 display: inline-flex !important;
                 align-items: center !important;
                 justify-content: center !important;
-                align-self: center !important;
                 margin-inline: auto;
                 padding: 0 !important;
-                box-sizing: border-box;
             }
-            [${BUTTON_ATTR}] .ide-rail-tab-link-icon {
+            [${CONFIG.buttonAttr}] .icon-wrapper {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
@@ -181,67 +194,61 @@
                 height: 20px;
                 pointer-events: none;
             }
-            [${BUTTON_ATTR}] .ide-rail-tab-link-icon svg {
+            [${CONFIG.buttonAttr}] svg {
                 width: 20px;
                 height: 20px;
-                display: block;
-                flex: 0 0 auto;
             }
-            [${BUTTON_ATTR}].is-open {
-                background: var(--overleaf-notes-checklist-active-button-bg, #2f3a4c) !important;
-                box-shadow: none !important;
+            [${CONFIG.buttonAttr}].active {
+                background: var(--onc-activeBg, #2f3a4c) !important;
             }
-            [${WIDGET_ATTR}] {
+            [${CONFIG.widgetAttr}] {
                 position: fixed;
-                z-index: 100000;
+                z-index: ${CONFIG.zIndexBase};
                 display: none;
                 flex-direction: column;
-                width: ${DEFAULT_WIDGET_WIDTH}px;
-                height: ${DEFAULT_WIDGET_HEIGHT}px;
-                min-width: ${MIN_WIDGET_WIDTH}px;
-                min-height: ${MIN_WIDGET_HEIGHT}px;
-                max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
-                max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
+                width: ${CONFIG.widget.defaultWidth}px;
+                height: ${CONFIG.widget.defaultHeight}px;
+                min-width: ${CONFIG.widget.minWidth}px;
+                min-height: ${CONFIG.widget.minHeight}px;
                 overflow: hidden;
                 resize: both;
-                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border: 1px solid var(--onc-border);
                 border-radius: 14px;
-                background: var(--overleaf-notes-checklist-bg, #1b222c);
-                color: var(--overleaf-notes-checklist-fg, #1b2733);
+                background: var(--onc-bg);
+                color: var(--onc-fg);
                 box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
             }
-            [${WIDGET_ATTR}].is-open {
+            [${CONFIG.widgetAttr}].open {
                 display: flex;
             }
-            [${WIDGET_ATTR}] .onc-header {
+            .onc-header {
                 display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
                 gap: 10px;
                 padding: 14px 16px;
-                border-bottom: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border-bottom: 1px solid var(--onc-border);
                 cursor: grab;
                 user-select: none;
-                touch-action: none;
             }
-            [${WIDGET_ATTR}] .onc-heading {
+            .onc-header.dragging {
+                cursor: grabbing;
+            }
+            .onc-heading {
+                flex: 1;
                 min-width: 0;
-                flex: 1 1 auto;
             }
-            [${WIDGET_ATTR}] .onc-title {
+            .onc-title {
                 margin: 0;
-                font-size: 0.9375rem;
+                font-size: 15px;
                 font-weight: 700;
                 line-height: 1.35;
             }
-            [${WIDGET_ATTR}] .onc-subtitle {
+            .onc-subtitle {
                 margin: 3px 0 0;
-                font-size: 0.75rem;
+                font-size: 12px;
                 line-height: 1.45;
-                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
+                color: var(--onc-muted);
             }
-            [${WIDGET_ATTR}] .onc-close {
-                flex: 0 0 auto;
+            .onc-close {
                 width: 28px;
                 height: 28px;
                 border: 0;
@@ -250,85 +257,77 @@
                 color: inherit;
                 cursor: pointer;
                 font-size: 17px;
-                line-height: 1;
-                display: inline-flex;
+                display: flex;
                 align-items: center;
                 justify-content: center;
             }
-            [${WIDGET_ATTR}] .onc-close:hover {
-                background: var(--overleaf-notes-checklist-hover, #354258);
+            .onc-close:hover {
+                background: var(--onc-hover);
             }
-            [${WIDGET_ATTR}] .onc-body {
-                flex: 1 1 auto;
-                min-height: 0;
+            .onc-body {
+                flex: 1;
                 overflow: auto;
                 padding: 14px 16px;
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
-                box-sizing: border-box;
             }
-            [${WIDGET_ATTR}] .onc-footer {
+            .onc-footer {
                 padding: 10px 16px 14px;
-                border-top: 1px solid var(--overleaf-notes-checklist-border, #46566f);
-                font-size: 0.6875rem;
-                line-height: 1.45;
-                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
-                min-height: 14px;
+                border-top: 1px solid var(--onc-border);
+                font-size: 11px;
+                color: var(--onc-muted);
             }
-            [${WIDGET_ATTR}] .onc-muted {
+            .onc-muted {
                 margin: 0;
-                font-size: 0.8125rem;
+                font-size: 13px;
                 line-height: 1.5;
-                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
+                color: var(--onc-muted);
             }
-            [${WIDGET_ATTR}] .onc-actions,
-            [${WIDGET_ATTR}] .onc-form {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-            }
-            [${WIDGET_ATTR}] .onc-form {
-                flex-wrap: nowrap;
-            }
-            [${WIDGET_ATTR}] .onc-input,
-            [${WIDGET_ATTR}] .onc-textarea {
+            .onc-textarea {
                 width: 100%;
-                box-sizing: border-box;
-                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
-                border-radius: 6px;
-                padding: 8px 10px;
-                background: var(--overleaf-notes-checklist-input-bg, #2f3a4c);
-                color: inherit;
-                font: inherit;
-                font-size: 0.8125rem;
-            }
-            [${WIDGET_ATTR}] .onc-textarea {
                 min-height: 220px;
-                resize: vertical;
-                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-                font-size: 0.75rem;
-                line-height: 1.55;
-            }
-            [${WIDGET_ATTR}] .onc-button {
-                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                padding: 8px 10px;
+                border: 1px solid var(--onc-border);
                 border-radius: 6px;
+                background: var(--onc-inputBg);
+                color: inherit;
+                font-family: ui-monospace, monospace;
+                font-size: 12px;
+                line-height: 1.55;
+                resize: vertical;
+            }
+            .onc-input {
+                flex: 1;
+                padding: 8px 10px;
+                border: 1px solid var(--onc-border);
+                border-radius: 6px;
+                background: var(--onc-inputBg);
+                color: inherit;
+                font-size: 13px;
+            }
+            .onc-button {
                 padding: 6px 10px;
-                background: var(--overleaf-notes-checklist-button-bg, #273142);
+                border: 1px solid var(--onc-border);
+                border-radius: 6px;
+                background: var(--onc-buttonBg);
                 color: inherit;
                 cursor: pointer;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                gap: 5px;
-                font-size: 0.75rem;
+                font-size: 12px;
                 font-weight: 600;
-                line-height: 1.3;
             }
-            [${WIDGET_ATTR}] .onc-button:hover {
-                background: var(--overleaf-notes-checklist-hover, #354258);
+            .onc-button:hover {
+                background: var(--onc-hover);
             }
-            [${WIDGET_ATTR}] .onc-list {
+            .onc-actions {
+                display: flex;
+                gap: 8px;
+            }
+            .onc-form {
+                display: flex;
+                gap: 8px;
+            }
+            .onc-list {
                 list-style: none;
                 padding: 0;
                 margin: 0;
@@ -336,498 +335,529 @@
                 flex-direction: column;
                 gap: 8px;
             }
-            [${WIDGET_ATTR}] .onc-card {
+            .onc-item {
                 display: flex;
                 align-items: flex-start;
                 gap: 10px;
-                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
-                border-radius: 6px;
                 padding: 10px 12px;
-                background: var(--overleaf-notes-checklist-card-bg, #2f3a4c);
-                box-sizing: border-box;
+                border: 1px solid var(--onc-border);
+                border-radius: 6px;
+                background: var(--onc-cardBg);
+            }
+            .onc-item-text {
+                flex: 1;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+            .onc-item-text.done {
+                text-decoration: line-through;
+                opacity: 0.72;
             }
         `;
         document.head.appendChild(style);
     }
 
-    function replaceButtonIcon(button, iconMarkup) {
-        const wrapper = document.createElement('span');
-        wrapper.innerHTML = iconMarkup.trim();
-        const icon = wrapper.firstElementChild;
-        if (!icon) return;
-        const iconSlot = document.createElement('span');
-        iconSlot.className = 'ide-rail-tab-link-icon';
-        iconSlot.setAttribute('aria-hidden', 'true');
-        iconSlot.appendChild(icon);
-        button.replaceChildren(iconSlot);
-    }
-
-    function createSidebarButton(panel, templateButton) {
-        const button = document.createElement('button');
-        const classList = templateButton
-            ? [...templateButton.classList].filter(cls => !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(cls))
-            : ['nav-link'];
-        button.className = classList.join(' ');
-        button.type = 'button';
-        button.setAttribute(BUTTON_ATTR, panel.id);
-        button.dataset.panelId = panel.id;
-        button.setAttribute('aria-label', panel.title);
-        button.setAttribute('title', panel.title);
-        replaceButtonIcon(button, panel.icon);
-        button.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            toggleWidget(panel.id);
-        }, true);
-        return button;
-    }
-
-    function bringToFront(widget) {
-        state.zIndex += 1;
-        widget.style.zIndex = String(state.zIndex);
-    }
-
-    function clampPosition(widget, position) {
-        const width = widget.offsetWidth || DEFAULT_WIDGET_WIDTH;
-        const height = widget.offsetHeight || DEFAULT_WIDGET_HEIGHT;
-        return {
-            x: Math.min(Math.max(WIDGET_PADDING, Math.round(position.x)), Math.max(WIDGET_PADDING, window.innerWidth - width - WIDGET_PADDING)),
-            y: Math.min(Math.max(WIDGET_MIN_TOP, Math.round(position.y)), Math.max(WIDGET_MIN_TOP, window.innerHeight - height - WIDGET_PADDING)),
-        };
-    }
-
-    function applyPosition(widget, panelId, position, persist = true) {
-        const next = clampPosition(widget, position);
-        widget.style.left = `${next.x}px`;
-        widget.style.top = `${next.y}px`;
-        if (persist) writeJson(getPositionStorageKey(panelId), next);
-    }
-
-    function clampSize(size) {
-        return {
-            width: Math.min(Math.max(MIN_WIDGET_WIDTH, Math.round(size.width || DEFAULT_WIDGET_WIDTH)), Math.max(MIN_WIDGET_WIDTH, window.innerWidth - WIDGET_PADDING * 2)),
-            height: Math.min(Math.max(MIN_WIDGET_HEIGHT, Math.round(size.height || DEFAULT_WIDGET_HEIGHT)), Math.max(MIN_WIDGET_HEIGHT, window.innerHeight - WIDGET_MIN_TOP - WIDGET_PADDING)),
-        };
-    }
-
-    function applySize(widget, panelId, size, persist = true) {
-        const next = clampSize(size);
-        widget.style.width = `${next.width}px`;
-        widget.style.height = `${next.height}px`;
-        if (persist) writeJson(getSizeStorageKey(panelId), next);
-    }
-
-    function restoreSize(widget, panel) {
-        const saved = readJson(getSizeStorageKey(panel.id), null) || panel.defaultSize || { width: DEFAULT_WIDGET_WIDTH, height: DEFAULT_WIDGET_HEIGHT };
-        applySize(widget, panel.id, saved, false);
-    }
-
-    function captureWidgetGeometry(panel) {
-        const widget = state.widgets.get(panel.id);
-        if (!widget || !widget.classList.contains('is-open')) return;
-        const rect = widget.getBoundingClientRect();
-        applySize(widget, panel.id, { width: rect.width, height: rect.height });
-        applyPosition(widget, panel.id, { x: rect.left, y: rect.top });
-    }
-
-    function restorePosition(widget, panel) {
-        const saved = readJson(getPositionStorageKey(panel.id), null) || panel.defaultPosition;
-        applyPosition(widget, panel.id, saved, false);
-    }
-
-    function setWidgetFooter(widget, text) {
-        const footer = widget.querySelector('.onc-footer');
-        if (footer) footer.textContent = String(text || '');
-    }
-
-    function applyTheme(widget) {
-        const theme = detectTheme();
-        widget.style.setProperty('--overleaf-notes-checklist-bg', theme.bg);
-        widget.style.setProperty('--overleaf-notes-checklist-fg', theme.fg);
-        widget.style.setProperty('--overleaf-notes-checklist-border', theme.border);
-        widget.style.setProperty('--overleaf-notes-checklist-muted', theme.muted);
-        widget.style.setProperty('--overleaf-notes-checklist-button-bg', theme.buttonBg);
-        widget.style.setProperty('--overleaf-notes-checklist-hover', theme.hover);
-        widget.style.setProperty('--overleaf-notes-checklist-input-bg', theme.inputBg);
-        widget.style.setProperty('--overleaf-notes-checklist-focus', theme.focus);
-        widget.style.setProperty('--overleaf-notes-checklist-card-bg', theme.cardBg);
-        widget.style.setProperty('--overleaf-notes-checklist-active-button-bg', theme.activeButtonBg);
-    }
-
-    function makeDraggable(widget, handle, panel) {
-        let pointerId = null;
-        let originX = 0;
-        let originY = 0;
-        let startX = 0;
-        let startY = 0;
-
-        handle.addEventListener('pointerdown', event => {
-            if (event.button !== 0) return;
-            if (event.target instanceof Element && event.target.closest(DRAG_IGNORE_SELECTOR)) return;
-            pointerId = event.pointerId;
-            handle.setPointerCapture(pointerId);
-            const rect = widget.getBoundingClientRect();
-            originX = rect.left;
-            originY = rect.top;
-            startX = event.clientX;
-            startY = event.clientY;
-            handle.style.cursor = 'grabbing';
-            bringToFront(widget);
-            event.preventDefault();
-        });
-
-        handle.addEventListener('pointermove', event => {
-            if (event.pointerId !== pointerId) return;
-            applyPosition(widget, panel.id, {
-                x: originX + event.clientX - startX,
-                y: originY + event.clientY - startY,
-            });
-        });
-
-        const release = event => {
-            if (event.pointerId !== pointerId) return;
-            pointerId = null;
-            handle.style.cursor = 'grab';
-        };
-
-        handle.addEventListener('pointerup', release);
-        handle.addEventListener('pointercancel', release);
-    }
-
-    function ensureWidget(panel) {
-        const existing = state.widgets.get(panel.id);
-        if (existing?.isConnected) return existing;
-
-        const widget = document.createElement('section');
-        widget.setAttribute(WIDGET_ATTR, panel.id);
-        widget.dataset.panelId = panel.id;
-        widget.hidden = true;
-
-        const header = document.createElement('div');
-        header.className = 'onc-header';
-
-        const heading = document.createElement('div');
-        heading.className = 'onc-heading';
-
-        const title = document.createElement('h2');
-        title.className = 'onc-title';
-        title.textContent = panel.title;
-
-        const subtitle = document.createElement('p');
-        subtitle.className = 'onc-subtitle';
-        subtitle.textContent = panel.subtitle;
-
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'onc-close';
-        close.textContent = '×';
-        close.setAttribute('aria-label', `Close ${panel.title}`);
-        close.addEventListener('click', () => closeWidget(panel.id));
-
-        heading.append(title, subtitle);
-        header.append(heading, close);
-
-        const body = document.createElement('div');
-        body.className = 'onc-body';
-        const footer = document.createElement('div');
-        footer.className = 'onc-footer';
-
-        widget.append(header, body, footer);
-        widget.addEventListener('pointerdown', () => bringToFront(widget), true);
-        document.body.appendChild(widget);
-        applyTheme(widget);
-        makeDraggable(widget, header, panel);
-        state.widgets.set(panel.id, widget);
-        return widget;
-    }
-
-    function renderNotesWidget(widget) {
-        const body = widget.querySelector('.onc-body');
-        if (!body) return;
-        body.textContent = '';
-
-        const intro = document.createElement('p');
-        intro.className = 'onc-muted';
-        intro.textContent = 'Keep reviewer feedback, TODOs, or reminders without touching the manuscript.';
-
-        const actions = document.createElement('div');
-        actions.className = 'onc-actions';
-
-        const copyButton = document.createElement('button');
-        copyButton.type = 'button';
-        copyButton.className = 'onc-button';
-        copyButton.textContent = 'Copy';
-
-        const clearButton = document.createElement('button');
-        clearButton.type = 'button';
-        clearButton.className = 'onc-button';
-        clearButton.textContent = 'Clear';
-
-        actions.append(copyButton, clearButton);
-
-        const textarea = document.createElement('textarea');
-        textarea.className = 'onc-textarea';
-        textarea.placeholder = 'Write project-specific notes here…';
-        textarea.value = localStorage.getItem(getNotesStorageKey()) || '';
-
-        let saveTimer = null;
-        textarea.addEventListener('input', () => {
-            clearTimeout(saveTimer);
-            setWidgetFooter(widget, 'Saving locally…');
-            saveTimer = window.setTimeout(() => {
-                localStorage.setItem(getNotesStorageKey(), textarea.value);
-                setWidgetFooter(widget, `Saved for ${getProjectName()}`);
-            }, 150);
-        });
-
-        copyButton.addEventListener('click', async () => {
-            await copyText(textarea.value);
-            setWidgetFooter(widget, 'Notes copied to clipboard');
-        });
-
-        clearButton.addEventListener('click', () => {
-            textarea.value = '';
-            localStorage.removeItem(getNotesStorageKey());
-            setWidgetFooter(widget, 'Notes cleared');
-        });
-
-        body.append(intro, actions, textarea);
-        setWidgetFooter(widget, `Autosaves locally for ${getProjectName()}`);
-    }
-
-    function readChecklistItems() {
-        return readJson(getChecklistStorageKey(), []);
-    }
-
-    function writeChecklistItems(items) {
-        writeJson(getChecklistStorageKey(), items);
-    }
-
-    function createChecklistId() {
-        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    }
-
-    function renderChecklistWidget(widget) {
-        const body = widget.querySelector('.onc-body');
-        if (!body) return;
-        body.textContent = '';
-
-        const items = readChecklistItems();
-
-        const form = document.createElement('form');
-        form.className = 'onc-form';
-
-        const input = document.createElement('input');
-        input.className = 'onc-input';
-        input.placeholder = 'Add a task…';
-
-        const addButton = document.createElement('button');
-        addButton.type = 'submit';
-        addButton.className = 'onc-button';
-        addButton.textContent = 'Add';
-
-        form.append(input, addButton);
-        body.appendChild(form);
-
-        const actions = document.createElement('div');
-        actions.className = 'onc-actions';
-        actions.style.justifyContent = 'flex-end';
-
-        const clearDoneButton = document.createElement('button');
-        clearDoneButton.type = 'button';
-        clearDoneButton.className = 'onc-button';
-        clearDoneButton.textContent = 'Clear done';
-        clearDoneButton.addEventListener('click', () => {
-            writeChecklistItems(items.filter(item => !item.done));
-            renderChecklistWidget(widget);
-        });
-
-        actions.appendChild(clearDoneButton);
-        body.appendChild(actions);
-
-        form.addEventListener('submit', event => {
-            event.preventDefault();
-            const text = input.value.trim();
-            if (!text) return;
-            writeChecklistItems([{ id: createChecklistId(), text, done: false }, ...items]);
-            renderChecklistWidget(widget);
-        });
-
-        if (!items.length) {
-            const empty = document.createElement('p');
-            empty.className = 'onc-muted';
-            empty.textContent = 'Track figures, references, experiments, or submission checks here.';
-            body.appendChild(empty);
-            setWidgetFooter(widget, '0 tasks stored locally');
+    // ===== CLIPBOARD =====
+    async function copyToClipboard(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
             return;
         }
-
-        const list = document.createElement('ul');
-        list.className = 'onc-list';
-
-        items.forEach(item => {
-            const row = document.createElement('li');
-            row.className = 'onc-card';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = Boolean(item.done);
-            checkbox.addEventListener('change', () => {
-                writeChecklistItems(items.map(entry => entry.id === item.id ? { ...entry, done: checkbox.checked } : entry));
-                renderChecklistWidget(widget);
-            });
-
-            const text = document.createElement('div');
-            text.style.cssText = `flex:1 1 auto;font-size:0.8125rem;line-height:1.5;text-decoration:${item.done ? 'line-through' : 'none'};opacity:${item.done ? '0.72' : '1'};`;
-            text.textContent = item.text;
-
-            const removeButton = document.createElement('button');
-            removeButton.type = 'button';
-            removeButton.className = 'onc-button';
-            removeButton.textContent = 'Remove';
-            removeButton.addEventListener('click', () => {
-                writeChecklistItems(items.filter(entry => entry.id !== item.id));
-                renderChecklistWidget(widget);
-            });
-
-            row.append(checkbox, text, removeButton);
-            list.appendChild(row);
-        });
-
-        body.appendChild(list);
-        setWidgetFooter(widget, `${items.filter(item => item.done).length}/${items.length} tasks completed`);
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.cssText = 'position:fixed;left:-9999px;';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
     }
 
-    function renderWidget(panelId) {
-        const panel = PANEL_DEFS.find(entry => entry.id === panelId);
-        if (!panel) return;
-        const widget = ensureWidget(panel);
-        applyTheme(widget);
-        if (panel.id === 'notes') {
-            renderNotesWidget(widget);
-        } else {
-            renderChecklistWidget(widget);
-        }
-    }
+    // ===== WIDGET COMPONENTS =====
+    const widgets = {
+        create(panel) {
+            const widget = document.createElement('section');
+            widget.setAttribute(CONFIG.widgetAttr, panel.id);
+            widget.dataset.panelId = panel.id;
 
-    function isWidgetOpen(panelId) {
-        const widget = state.widgets.get(panelId);
-        return Boolean(widget && widget.classList.contains('is-open'));
-    }
+            const header = document.createElement('div');
+            header.className = 'onc-header';
 
-    function updateButtonState(panelId) {
-        const button = document.querySelector(`[${BUTTON_ATTR}="${panelId}"]`);
-        if (!button) return;
-        button.classList.toggle('is-open', isWidgetOpen(panelId));
-        button.setAttribute('aria-pressed', isWidgetOpen(panelId) ? 'true' : 'false');
-    }
+            const heading = document.createElement('div');
+            heading.className = 'onc-heading';
 
-    function openWidget(panelId) {
-        const panel = PANEL_DEFS.find(entry => entry.id === panelId);
-        if (!panel) return;
-        const widget = ensureWidget(panel);
-        renderWidget(panelId);
-        widget.hidden = false;
-        widget.classList.add('is-open');
-        restoreSize(widget, panel);
-        restorePosition(widget, panel);
-        bringToFront(widget);
-        updateButtonState(panelId);
-    }
+            const title = document.createElement('h2');
+            title.className = 'onc-title';
+            title.textContent = panel.title;
 
-    function closeWidget(panelId) {
-        const widget = state.widgets.get(panelId);
-        if (!widget) return;
-        widget.classList.remove('is-open');
-        widget.hidden = true;
-        updateButtonState(panelId);
-    }
+            const subtitle = document.createElement('p');
+            subtitle.className = 'onc-subtitle';
+            subtitle.textContent = panel.subtitle;
 
-    function toggleWidget(panelId) {
-        if (isWidgetOpen(panelId)) {
-            closeWidget(panelId);
-        } else {
-            openWidget(panelId);
-        }
-    }
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'onc-close';
+            closeBtn.textContent = '×';
+            closeBtn.type = 'button';
+            closeBtn.onclick = () => widgets.close(panel.id);
 
-    function syncButtons() {
-        const context = resolveContext();
-        if (!context.tabsWrapper || !context.templateButton) return;
+            heading.append(title, subtitle);
+            header.append(heading, closeBtn);
 
-        const theme = detectTheme();
-        document.documentElement.style.setProperty('--overleaf-notes-checklist-active-button-bg', theme.activeButtonBg);
+            const body = document.createElement('div');
+            body.className = 'onc-body';
 
-        PANEL_DEFS.forEach(panel => {
-            let button = context.tabsWrapper.querySelector(`[${BUTTON_ATTR}="${panel.id}"]`);
-            if (!button) {
-                button = createSidebarButton(panel, context.templateButton);
-                context.tabsWrapper.appendChild(button);
+            const footer = document.createElement('div');
+            footer.className = 'onc-footer';
+
+            widget.append(header, body, footer);
+            document.body.appendChild(widget);
+
+            theme.apply(widget);
+            widgets.makeDraggable(widget, header, panel);
+            widgets.restoreGeometry(widget, panel);
+
+            widget.addEventListener('pointerdown', () => widgets.bringToFront(widget), true);
+
+            state.widgets.set(panel.id, widget);
+            return widget;
+        },
+
+        get(panelId) {
+            let widget = state.widgets.get(panelId);
+            if (!widget?.isConnected) {
+                const panel = PANELS.find(p => p.id === panelId);
+                if (panel) widget = widgets.create(panel);
             }
-            updateButtonState(panel.id);
-        });
-    }
+            return widget;
+        },
 
-    function refreshOpenWidgets(forceRender = false) {
-        PANEL_DEFS.forEach(panel => {
-            const widget = state.widgets.get(panel.id);
+        open(panelId) {
+            const panel = PANELS.find(p => p.id === panelId);
+            if (!panel) return;
+
+            const widget = widgets.get(panelId);
             if (!widget) return;
-            applyTheme(widget);
-            if (widget.classList.contains('is-open') && forceRender) {
-                renderWidget(panel.id);
-                restoreSize(widget, panel);
-                restorePosition(widget, panel);
+
+            widgets.render(panelId);
+            widget.classList.add('open');
+            widgets.bringToFront(widget);
+            buttons.updateState(panelId);
+        },
+
+        close(panelId) {
+            const widget = state.widgets.get(panelId);
+            if (!widget) return;
+            widget.classList.remove('open');
+            buttons.updateState(panelId);
+        },
+
+        toggle(panelId) {
+            const widget = state.widgets.get(panelId);
+            const isOpen = widget?.classList.contains('open');
+            if (isOpen) {
+                widgets.close(panelId);
+            } else {
+                widgets.open(panelId);
             }
-        });
+        },
+
+        isOpen(panelId) {
+            const widget = state.widgets.get(panelId);
+            return widget?.classList.contains('open') || false;
+        },
+
+        bringToFront(widget) {
+            state.zIndex += 1;
+            widget.style.zIndex = state.zIndex;
+        },
+
+        setFooter(widget, text) {
+            const footer = widget.querySelector('.onc-footer');
+            if (footer) footer.textContent = text;
+        },
+
+        saveGeometry(widget, panelId) {
+            const rect = widget.getBoundingClientRect();
+            storage.set(storage.keys.position(panelId), { x: rect.left, y: rect.top });
+            storage.set(storage.keys.size(panelId), { width: rect.width, height: rect.height });
+        },
+
+        restoreGeometry(widget, panel) {
+            const savedPos = storage.get(storage.keys.position(panel.id));
+            const savedSize = storage.get(storage.keys.size(panel.id));
+
+            const pos = savedPos || { x: panel.defaultX, y: panel.defaultY };
+            const size = savedSize || { width: panel.defaultWidth, height: panel.defaultHeight };
+
+            const x = utils.clamp(pos.x, CONFIG.widget.padding, window.innerWidth - CONFIG.widget.minWidth - CONFIG.widget.padding);
+            const y = utils.clamp(pos.y, CONFIG.widget.minTop, window.innerHeight - CONFIG.widget.minHeight - CONFIG.widget.padding);
+            const w = utils.clamp(size.width, CONFIG.widget.minWidth, window.innerWidth - CONFIG.widget.padding * 2);
+            const h = utils.clamp(size.height, CONFIG.widget.minHeight, window.innerHeight - CONFIG.widget.minTop - CONFIG.widget.padding);
+
+            widget.style.left = `${x}px`;
+            widget.style.top = `${y}px`;
+            widget.style.width = `${w}px`;
+            widget.style.height = `${h}px`;
+        },
+
+        makeDraggable(widget, handle, panel) {
+            let pointerId = null;
+            let startX = 0;
+            let startY = 0;
+            let originX = 0;
+            let originY = 0;
+
+            handle.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                if (e.target.closest(CONFIG.selectors.dragIgnore)) return;
+
+                pointerId = e.pointerId;
+                handle.setPointerCapture(pointerId);
+
+                const rect = widget.getBoundingClientRect();
+                originX = rect.left;
+                originY = rect.top;
+                startX = e.clientX;
+                startY = e.clientY;
+
+                handle.classList.add('dragging');
+                widgets.bringToFront(widget);
+                e.preventDefault();
+            });
+
+            handle.addEventListener('pointermove', (e) => {
+                if (e.pointerId !== pointerId) return;
+
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                const x = utils.clamp(originX + dx, CONFIG.widget.padding, window.innerWidth - widget.offsetWidth - CONFIG.widget.padding);
+                const y = utils.clamp(originY + dy, CONFIG.widget.minTop, window.innerHeight - widget.offsetHeight - CONFIG.widget.padding);
+
+                widget.style.left = `${x}px`;
+                widget.style.top = `${y}px`;
+            });
+
+            const release = (e) => {
+                if (e.pointerId !== pointerId) return;
+                pointerId = null;
+                handle.classList.remove('dragging');
+                widgets.saveGeometry(widget, panel.id);
+            };
+
+            handle.addEventListener('pointerup', release);
+            handle.addEventListener('pointercancel', release);
+        },
+
+        render(panelId) {
+            const panel = PANELS.find(p => p.id === panelId);
+            if (!panel) return;
+
+            const widget = widgets.get(panelId);
+            if (!widget) return;
+
+            theme.apply(widget);
+
+            if (panel.id === 'notes') {
+                widgets.renderNotes(widget);
+            } else if (panel.id === 'checklist') {
+                widgets.renderChecklist(widget);
+            }
+        },
+
+        renderNotes(widget) {
+            const body = widget.querySelector('.onc-body');
+            if (!body) return;
+
+            body.textContent = '';
+
+            const intro = document.createElement('p');
+            intro.className = 'onc-muted';
+            intro.textContent = 'Keep reviewer feedback, TODOs, or reminders without touching the manuscript.';
+
+            const actions = document.createElement('div');
+            actions.className = 'onc-actions';
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'onc-button';
+            copyBtn.textContent = 'Copy';
+            copyBtn.type = 'button';
+
+            const clearBtn = document.createElement('button');
+            clearBtn.className = 'onc-button';
+            clearBtn.textContent = 'Clear';
+            clearBtn.type = 'button';
+
+            actions.append(copyBtn, clearBtn);
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'onc-textarea';
+            textarea.placeholder = 'Write project-specific notes here…';
+            textarea.value = storage.get(storage.keys.notes(), '') || '';
+
+            const saveDebounced = utils.debounce(() => {
+                storage.set(storage.keys.notes(), textarea.value);
+                widgets.setFooter(widget, `Saved for ${utils.getProjectName()}`);
+            }, CONFIG.debounceMs);
+
+            textarea.addEventListener('input', () => {
+                widgets.setFooter(widget, 'Saving locally…');
+                saveDebounced();
+            });
+
+            copyBtn.addEventListener('click', async () => {
+                await copyToClipboard(textarea.value);
+                widgets.setFooter(widget, 'Notes copied to clipboard');
+            });
+
+            clearBtn.addEventListener('click', () => {
+                textarea.value = '';
+                storage.remove(storage.keys.notes());
+                widgets.setFooter(widget, 'Notes cleared');
+            });
+
+            body.append(intro, actions, textarea);
+            widgets.setFooter(widget, `Autosaves locally for ${utils.getProjectName()}`);
+        },
+
+        renderChecklist(widget) {
+            const body = widget.querySelector('.onc-body');
+            if (!body) return;
+
+            body.textContent = '';
+
+            const items = storage.get(storage.keys.checklist(), []);
+
+            const form = document.createElement('form');
+            form.className = 'onc-form';
+
+            const input = document.createElement('input');
+            input.className = 'onc-input';
+            input.placeholder = 'Add a task…';
+
+            const addBtn = document.createElement('button');
+            addBtn.className = 'onc-button';
+            addBtn.textContent = 'Add';
+            addBtn.type = 'submit';
+
+            form.append(input, addBtn);
+
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const text = input.value.trim();
+                if (!text) return;
+
+                const newItem = {
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    text,
+                    done: false,
+                };
+
+                storage.set(storage.keys.checklist(), [newItem, ...items]);
+                widgets.renderChecklist(widget);
+            });
+
+            const actions = document.createElement('div');
+            actions.className = 'onc-actions';
+            actions.style.justifyContent = 'flex-end';
+
+            const clearDoneBtn = document.createElement('button');
+            clearDoneBtn.className = 'onc-button';
+            clearDoneBtn.textContent = 'Clear done';
+            clearDoneBtn.type = 'button';
+            clearDoneBtn.addEventListener('click', () => {
+                storage.set(storage.keys.checklist(), items.filter(item => !item.done));
+                widgets.renderChecklist(widget);
+            });
+
+            actions.appendChild(clearDoneBtn);
+
+            body.append(form, actions);
+
+            if (items.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'onc-muted';
+                empty.textContent = 'Track figures, references, experiments, or submission checks here.';
+                body.appendChild(empty);
+                widgets.setFooter(widget, '0 tasks stored locally');
+                return;
+            }
+
+            const list = document.createElement('ul');
+            list.className = 'onc-list';
+
+            items.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'onc-item';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = item.done;
+                checkbox.addEventListener('change', () => {
+                    const updated = items.map(i => i.id === item.id ? { ...i, done: checkbox.checked } : i);
+                    storage.set(storage.keys.checklist(), updated);
+                    widgets.renderChecklist(widget);
+                });
+
+                const text = document.createElement('div');
+                text.className = `onc-item-text${item.done ? ' done' : ''}`;
+                text.textContent = item.text;
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'onc-button';
+                removeBtn.textContent = 'Remove';
+                removeBtn.type = 'button';
+                removeBtn.addEventListener('click', () => {
+                    storage.set(storage.keys.checklist(), items.filter(i => i.id !== item.id));
+                    widgets.renderChecklist(widget);
+                });
+
+                li.append(checkbox, text, removeBtn);
+                list.appendChild(li);
+            });
+
+            body.appendChild(list);
+
+            const doneCount = items.filter(i => i.done).length;
+            widgets.setFooter(widget, `${doneCount}/${items.length} tasks completed`);
+        },
+    };
+
+    // ===== SIDEBAR BUTTONS =====
+    const buttons = {
+        findContainer() {
+            const wrapper = document.querySelector(CONFIG.selectors.tabsWrapper);
+            const fileTreeTab = wrapper?.querySelector(CONFIG.selectors.fileTreeTab);
+            const template = fileTreeTab || wrapper?.querySelector('button, [role="tab"]');
+            return { wrapper, template };
+        },
+
+        create(panel, template) {
+            const button = document.createElement('button');
+            const classList = template
+                ? [...template.classList].filter(c => !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(c))
+                : ['nav-link'];
+
+            button.className = classList.join(' ');
+            button.type = 'button';
+            button.setAttribute(CONFIG.buttonAttr, panel.id);
+            button.dataset.panelId = panel.id;
+            button.setAttribute('aria-label', panel.title);
+            button.setAttribute('title', panel.title);
+
+            const iconWrapper = document.createElement('span');
+            iconWrapper.className = 'icon-wrapper';
+            iconWrapper.innerHTML = panel.icon;
+
+            button.appendChild(iconWrapper);
+
+            button.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                widgets.toggle(panel.id);
+            }, true);
+
+            state.buttons.set(panel.id, button);
+            return button;
+        },
+
+        updateState(panelId) {
+            const button = state.buttons.get(panelId);
+            if (!button) return;
+
+            const isOpen = widgets.isOpen(panelId);
+            button.classList.toggle('active', isOpen);
+            button.setAttribute('aria-pressed', isOpen ? 'true' : 'false');
+        },
+
+        sync() {
+            const { wrapper, template } = buttons.findContainer();
+            if (!wrapper || !template) return;
+
+            const colors = theme.get();
+            document.documentElement.style.setProperty('--onc-activeBg', colors.activeBg);
+
+            PANELS.forEach(panel => {
+                let button = wrapper.querySelector(`[${CONFIG.buttonAttr}="${panel.id}"]`);
+                if (!button) {
+                    button = buttons.create(panel, template);
+                    wrapper.appendChild(button);
+                }
+                buttons.updateState(panel.id);
+            });
+        },
+    };
+
+    // ===== LIFECYCLE =====
+    function syncAll(forceRender = false) {
+        buttons.sync();
+
+        const currentProjectId = utils.getProjectId();
+        const projectChanged = currentProjectId !== state.lastProjectId;
+        state.lastProjectId = currentProjectId;
+
+        if (forceRender || projectChanged) {
+            PANELS.forEach(panel => {
+                const widget = state.widgets.get(panel.id);
+                if (widget?.classList.contains('open')) {
+                    widgets.render(panel.id);
+                    widgets.restoreGeometry(widget, panel);
+                }
+            });
+        }
     }
 
-    function scheduleSync(delay = 0, forceRender = false) {
-        window.clearTimeout(state.refreshTimer);
-        state.refreshTimer = window.setTimeout(() => {
-            syncButtons();
-            const currentProjectId = getProjectId();
-            const shouldRender = forceRender || currentProjectId !== state.lastProjectId;
-            state.lastProjectId = currentProjectId;
-            refreshOpenWidgets(shouldRender);
-        }, delay);
+    function scheduledSync(delay = 0, forceRender = false) {
+        clearTimeout(state.timers.sync);
+        state.timers.sync = setTimeout(() => syncAll(forceRender), delay);
     }
 
-    function watchDom() {
+    function watchDOM() {
         if (state.observer) return;
+
         state.observer = new MutationObserver(() => {
             if (state.lastHref !== window.location.href) {
                 state.lastHref = window.location.href;
             }
-            scheduleSync(DOM_SYNC_DEBOUNCE_MS);
+            scheduledSync(CONFIG.debounceMs);
         });
+
         state.observer.observe(document.documentElement, { childList: true, subtree: true });
-        window.addEventListener('popstate', () => scheduleSync(0));
-        window.addEventListener('hashchange', () => scheduleSync(0));
-        window.addEventListener('focus', () => scheduleSync(0));
-        window.addEventListener('mouseup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
-        window.addEventListener('pointerup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
-        window.addEventListener('resize', () => {
-            window.clearTimeout(state.resizeTimer);
-            state.resizeTimer = window.setTimeout(() => {
-                PANEL_DEFS.forEach(panel => {
-                    const widget = state.widgets.get(panel.id);
-                    if (widget && widget.classList.contains('is-open')) {
-                        captureWidgetGeometry(panel);
-                    }
-                });
-            }, DOM_SYNC_DEBOUNCE_MS);
-        });
+
+        window.addEventListener('popstate', () => scheduledSync(0));
+        window.addEventListener('hashchange', () => scheduledSync(0));
+        window.addEventListener('focus', () => scheduledSync(0));
+
+        const saveAllGeometry = () => {
+            PANELS.forEach(panel => {
+                const widget = state.widgets.get(panel.id);
+                if (widget?.classList.contains('open')) {
+                    widgets.saveGeometry(widget, panel.id);
+                }
+            });
+        };
+
+        window.addEventListener('mouseup', saveAllGeometry, true);
+        window.addEventListener('pointerup', saveAllGeometry, true);
+
+        window.addEventListener('resize', utils.debounce(() => {
+            PANELS.forEach(panel => {
+                const widget = state.widgets.get(panel.id);
+                if (widget?.classList.contains('open')) {
+                    const p = PANELS.find(p => p.id === panel.id);
+                    if (p) widgets.restoreGeometry(widget, p);
+                }
+            });
+        }, CONFIG.debounceMs));
     }
 
-    function boot() {
+    function init() {
         if (!document.body) {
-            window.setTimeout(boot, 100);
+            setTimeout(init, 100);
             return;
         }
-        ensureStyle();
-        watchDom();
-        scheduleSync(0);
+        injectStyles();
+        watchDOM();
+        scheduledSync(0);
     }
 
-    boot();
+    init();
 })();
