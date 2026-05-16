@@ -8,7 +8,7 @@ The repository focuses on small, single-purpose scripts that smooth out repetiti
 
 - Standalone userscripts live at the repository root.
 - Original pre-cleanup copies are preserved in `/original-userscripts`.
-- A change summary from the cleanup pass lives in `/userscripts-report.md`.
+- Non-userscript notes and reports live in `/docs`.
 - Scripts are distributed directly from the `main` branch through each file's `@updateURL` and `@downloadURL` metadata.
 
 ## Requirements
@@ -48,9 +48,12 @@ If you want a manual refresh:
 /
 ├── <userscript files>
 ├── original-userscripts/        # preserved originals
-├── README.md                    # repository documentation
-├── userscripts-report.md        # cleanup summary
-└── autoupdate-report.md         # notes about raw GitHub auto-updates
+└── docs/
+    ├── README.md                # repository documentation
+    ├── userscripts-report.md    # cleanup summary
+    ├── autoupdate-report.md     # notes about raw GitHub auto-updates
+    ├── overleaf-github-shortcut-fix-report.md
+    └── vinted-item-zip-backup-report.md
 ```
 
 ## Script catalog
