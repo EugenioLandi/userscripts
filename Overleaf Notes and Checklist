@@ -1,0 +1,833 @@
+// ==UserScript==
+// @name         Overleaf Notes and Checklist
+// @namespace    http://tampermonkey.net/
+// @version      1.2.0
+// @description  Add centered Overleaf sidebar buttons for independent floating notes and checklist widgets
+// @author       You
+// @match        https://*.overleaf.com/project/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20Notes%20and%20Checklist
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20Notes%20and%20Checklist
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafNotesChecklistInitialized) return;
+    window.__overleafNotesChecklistInitialized = true;
+
+    const STYLE_ID = 'overleaf-notes-checklist-style';
+    const BUTTON_ATTR = 'data-overleaf-notes-checklist-button';
+    const WIDGET_ATTR = 'data-overleaf-notes-checklist-widget';
+    const TABS_WRAPPER_SELECTOR = '.ide-rail-tabs-wrapper';
+    const FILE_TREE_TAB_SELECTOR = '[data-rr-ui-event-key="file-tree"]';
+    const NATIVE_TAB_CONTENT_SELECTOR = '.ide-rail-content .ide-rail-tab-content';
+    const DRAG_IGNORE_SELECTOR = 'button, input, textarea, select, a, label';
+    const DOM_SYNC_DEBOUNCE_MS = 150;
+    const WIDGET_PADDING = 16;
+    const WIDGET_MIN_TOP = 72;
+    const DEFAULT_WIDGET_WIDTH = 360;
+    const DEFAULT_WIDGET_HEIGHT = 360;
+    const MIN_WIDGET_WIDTH = 320;
+    const MIN_WIDGET_HEIGHT = 220;
+
+    const PANEL_DEFS = [
+        {
+            id: 'notes',
+            title: 'Local notes',
+            subtitle: 'Project notes stored only in this browser',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 11h6"/><path d="M10 15h6"/><path d="M10 19h4"/></svg>',
+            defaultPosition: { x: 120, y: 112 },
+            defaultSize: { width: 360, height: 380 },
+        },
+        {
+            id: 'checklist',
+            title: 'Checklist',
+            subtitle: 'Local project tasks stored only in this browser',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l2 2 4-4"/><path d="M9 17l2 2 4-4"/><path d="M5 6h14"/></svg>',
+            defaultPosition: { x: 520, y: 112 },
+            defaultSize: { width: 380, height: 420 },
+        },
+    ];
+
+    const state = {
+        widgets: new Map(),
+        refreshTimer: null,
+        observer: null,
+        resizeTimer: null,
+        zIndex: 100000,
+        lastHref: window.location.href,
+        lastProjectId: getProjectId(),
+    };
+
+    function getProjectId() {
+        const match = window.location.pathname.match(/\/project\/([^/]+)/);
+        return match ? match[1] : null;
+    }
+
+    function getProjectName() {
+        const selectors = [
+            '.ide-redesign-toolbar-project-name',
+            '[data-testid="project-name"]',
+            'input[aria-label="Project name"]',
+            'input[name="projectName"]',
+        ];
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            const value = element?.value || element?.textContent;
+            if (value && value.trim()) return value.trim();
+        }
+        return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled project';
+    }
+
+    function getProjectStorageScope() {
+        return getProjectId() || `fallback-page:${window.location.pathname}${window.location.search}`;
+    }
+
+    function getNotesStorageKey() {
+        return `experimental-overleaf-sidebar-local-notepad:${getProjectStorageScope()}`;
+    }
+
+    function getChecklistStorageKey() {
+        return `experimental-overleaf-sidebar-checklist:${getProjectStorageScope()}`;
+    }
+
+    function getPositionStorageKey(panelId) {
+        return `overleaf-notes-checklist:${panelId}:position`;
+    }
+
+    function getSizeStorageKey(panelId) {
+        return `overleaf-notes-checklist:${panelId}:size`;
+    }
+
+    function readJson(key, fallback) {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+            return parsed ?? fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function writeJson(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch {
+            // ignore quota errors
+        }
+    }
+
+    async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+        document.body.appendChild(textarea);
+        textarea.select();
+        if (typeof document.execCommand === 'function' && document.queryCommandSupported?.('copy') !== false) {
+            document.execCommand('copy');
+        }
+        textarea.remove();
+    }
+
+    function resolveContext() {
+        const tabsWrapper = document.querySelector(TABS_WRAPPER_SELECTOR);
+        const fileTreeButton = tabsWrapper?.querySelector(FILE_TREE_TAB_SELECTOR) || null;
+        const templateButton = fileTreeButton || tabsWrapper?.querySelector('button, [role="tab"]') || null;
+        const tabContent = document.querySelector(NATIVE_TAB_CONTENT_SELECTOR);
+        return { tabsWrapper, fileTreeButton, templateButton, tabContent };
+    }
+
+    function detectTheme() {
+        return {
+            bg: '#1b222c',
+            fg: '#dbe5f3',
+            border: '#46566f',
+            muted: '#aab6c8',
+            buttonBg: '#273142',
+            hover: '#354258',
+            inputBg: '#2f3a4c',
+            focus: '#88b7ff',
+            cardBg: '#2f3a4c',
+            activeButtonBg: '#2f3a4c',
+        };
+    }
+
+    function ensureStyle() {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            [${BUTTON_ATTR}] {
+                position: relative;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                align-self: center !important;
+                margin-inline: auto;
+                padding: 0 !important;
+                box-sizing: border-box;
+            }
+            [${BUTTON_ATTR}] .ide-rail-tab-link-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
+                pointer-events: none;
+            }
+            [${BUTTON_ATTR}] .ide-rail-tab-link-icon svg {
+                width: 20px;
+                height: 20px;
+                display: block;
+                flex: 0 0 auto;
+            }
+            [${BUTTON_ATTR}].is-open {
+                background: var(--overleaf-notes-checklist-active-button-bg, #2f3a4c) !important;
+                box-shadow: none !important;
+            }
+            [${WIDGET_ATTR}] {
+                position: fixed;
+                z-index: 100000;
+                display: none;
+                flex-direction: column;
+                width: ${DEFAULT_WIDGET_WIDTH}px;
+                height: ${DEFAULT_WIDGET_HEIGHT}px;
+                min-width: ${MIN_WIDGET_WIDTH}px;
+                min-height: ${MIN_WIDGET_HEIGHT}px;
+                max-width: calc(100vw - ${WIDGET_PADDING * 2}px);
+                max-height: calc(100vh - ${WIDGET_MIN_TOP + WIDGET_PADDING}px);
+                overflow: hidden;
+                resize: both;
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border-radius: 14px;
+                background: var(--overleaf-notes-checklist-bg, #1b222c);
+                color: var(--overleaf-notes-checklist-fg, #1b2733);
+                box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
+            }
+            [${WIDGET_ATTR}].is-open {
+                display: flex;
+            }
+            [${WIDGET_ATTR}] .onc-header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 10px;
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                cursor: grab;
+                user-select: none;
+                touch-action: none;
+            }
+            [${WIDGET_ATTR}] .onc-heading {
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+            [${WIDGET_ATTR}] .onc-title {
+                margin: 0;
+                font-size: 0.9375rem;
+                font-weight: 700;
+                line-height: 1.35;
+            }
+            [${WIDGET_ATTR}] .onc-subtitle {
+                margin: 3px 0 0;
+                font-size: 0.75rem;
+                line-height: 1.45;
+                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
+            }
+            [${WIDGET_ATTR}] .onc-close {
+                flex: 0 0 auto;
+                width: 28px;
+                height: 28px;
+                border: 0;
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+                cursor: pointer;
+                font-size: 17px;
+                line-height: 1;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+            [${WIDGET_ATTR}] .onc-close:hover {
+                background: var(--overleaf-notes-checklist-hover, #354258);
+            }
+            [${WIDGET_ATTR}] .onc-body {
+                flex: 1 1 auto;
+                min-height: 0;
+                overflow: auto;
+                padding: 14px 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                box-sizing: border-box;
+            }
+            [${WIDGET_ATTR}] .onc-footer {
+                padding: 10px 16px 14px;
+                border-top: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                font-size: 0.6875rem;
+                line-height: 1.45;
+                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
+                min-height: 14px;
+            }
+            [${WIDGET_ATTR}] .onc-muted {
+                margin: 0;
+                font-size: 0.8125rem;
+                line-height: 1.5;
+                color: var(--overleaf-notes-checklist-muted, rgba(90,100,110,0.88));
+            }
+            [${WIDGET_ATTR}] .onc-actions,
+            [${WIDGET_ATTR}] .onc-form {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            [${WIDGET_ATTR}] .onc-form {
+                flex-wrap: nowrap;
+            }
+            [${WIDGET_ATTR}] .onc-input,
+            [${WIDGET_ATTR}] .onc-textarea {
+                width: 100%;
+                box-sizing: border-box;
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border-radius: 6px;
+                padding: 8px 10px;
+                background: var(--overleaf-notes-checklist-input-bg, #2f3a4c);
+                color: inherit;
+                font: inherit;
+                font-size: 0.8125rem;
+            }
+            [${WIDGET_ATTR}] .onc-textarea {
+                min-height: 220px;
+                resize: vertical;
+                font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                font-size: 0.75rem;
+                line-height: 1.55;
+            }
+            [${WIDGET_ATTR}] .onc-button {
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border-radius: 6px;
+                padding: 6px 10px;
+                background: var(--overleaf-notes-checklist-button-bg, #273142);
+                color: inherit;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 5px;
+                font-size: 0.75rem;
+                font-weight: 600;
+                line-height: 1.3;
+            }
+            [${WIDGET_ATTR}] .onc-button:hover {
+                background: var(--overleaf-notes-checklist-hover, #354258);
+            }
+            [${WIDGET_ATTR}] .onc-list {
+                list-style: none;
+                padding: 0;
+                margin: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            [${WIDGET_ATTR}] .onc-card {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                border: 1px solid var(--overleaf-notes-checklist-border, #46566f);
+                border-radius: 6px;
+                padding: 10px 12px;
+                background: var(--overleaf-notes-checklist-card-bg, #2f3a4c);
+                box-sizing: border-box;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function replaceButtonIcon(button, iconMarkup) {
+        const wrapper = document.createElement('span');
+        wrapper.innerHTML = iconMarkup.trim();
+        const icon = wrapper.firstElementChild;
+        if (!icon) return;
+        const iconSlot = document.createElement('span');
+        iconSlot.className = 'ide-rail-tab-link-icon';
+        iconSlot.setAttribute('aria-hidden', 'true');
+        iconSlot.appendChild(icon);
+        button.replaceChildren(iconSlot);
+    }
+
+    function createSidebarButton(panel, templateButton) {
+        const button = document.createElement('button');
+        const classList = templateButton
+            ? [...templateButton.classList].filter(cls => !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(cls))
+            : ['nav-link'];
+        button.className = classList.join(' ');
+        button.type = 'button';
+        button.setAttribute(BUTTON_ATTR, panel.id);
+        button.dataset.panelId = panel.id;
+        button.setAttribute('aria-label', panel.title);
+        button.setAttribute('title', panel.title);
+        replaceButtonIcon(button, panel.icon);
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleWidget(panel.id);
+        }, true);
+        return button;
+    }
+
+    function bringToFront(widget) {
+        state.zIndex += 1;
+        widget.style.zIndex = String(state.zIndex);
+    }
+
+    function clampPosition(widget, position) {
+        const width = widget.offsetWidth || DEFAULT_WIDGET_WIDTH;
+        const height = widget.offsetHeight || DEFAULT_WIDGET_HEIGHT;
+        return {
+            x: Math.min(Math.max(WIDGET_PADDING, Math.round(position.x)), Math.max(WIDGET_PADDING, window.innerWidth - width - WIDGET_PADDING)),
+            y: Math.min(Math.max(WIDGET_MIN_TOP, Math.round(position.y)), Math.max(WIDGET_MIN_TOP, window.innerHeight - height - WIDGET_PADDING)),
+        };
+    }
+
+    function applyPosition(widget, panelId, position, persist = true) {
+        const next = clampPosition(widget, position);
+        widget.style.left = `${next.x}px`;
+        widget.style.top = `${next.y}px`;
+        if (persist) writeJson(getPositionStorageKey(panelId), next);
+    }
+
+    function clampSize(size) {
+        return {
+            width: Math.min(Math.max(MIN_WIDGET_WIDTH, Math.round(size.width || DEFAULT_WIDGET_WIDTH)), Math.max(MIN_WIDGET_WIDTH, window.innerWidth - WIDGET_PADDING * 2)),
+            height: Math.min(Math.max(MIN_WIDGET_HEIGHT, Math.round(size.height || DEFAULT_WIDGET_HEIGHT)), Math.max(MIN_WIDGET_HEIGHT, window.innerHeight - WIDGET_MIN_TOP - WIDGET_PADDING)),
+        };
+    }
+
+    function applySize(widget, panelId, size, persist = true) {
+        const next = clampSize(size);
+        widget.style.width = `${next.width}px`;
+        widget.style.height = `${next.height}px`;
+        if (persist) writeJson(getSizeStorageKey(panelId), next);
+    }
+
+    function restoreSize(widget, panel) {
+        const saved = readJson(getSizeStorageKey(panel.id), null) || panel.defaultSize || { width: DEFAULT_WIDGET_WIDTH, height: DEFAULT_WIDGET_HEIGHT };
+        applySize(widget, panel.id, saved, false);
+    }
+
+    function captureWidgetGeometry(panel) {
+        const widget = state.widgets.get(panel.id);
+        if (!widget || !widget.classList.contains('is-open')) return;
+        const rect = widget.getBoundingClientRect();
+        applySize(widget, panel.id, { width: rect.width, height: rect.height });
+        applyPosition(widget, panel.id, { x: rect.left, y: rect.top });
+    }
+
+    function restorePosition(widget, panel) {
+        const saved = readJson(getPositionStorageKey(panel.id), null) || panel.defaultPosition;
+        applyPosition(widget, panel.id, saved, false);
+    }
+
+    function setWidgetFooter(widget, text) {
+        const footer = widget.querySelector('.onc-footer');
+        if (footer) footer.textContent = String(text || '');
+    }
+
+    function applyTheme(widget) {
+        const theme = detectTheme();
+        widget.style.setProperty('--overleaf-notes-checklist-bg', theme.bg);
+        widget.style.setProperty('--overleaf-notes-checklist-fg', theme.fg);
+        widget.style.setProperty('--overleaf-notes-checklist-border', theme.border);
+        widget.style.setProperty('--overleaf-notes-checklist-muted', theme.muted);
+        widget.style.setProperty('--overleaf-notes-checklist-button-bg', theme.buttonBg);
+        widget.style.setProperty('--overleaf-notes-checklist-hover', theme.hover);
+        widget.style.setProperty('--overleaf-notes-checklist-input-bg', theme.inputBg);
+        widget.style.setProperty('--overleaf-notes-checklist-focus', theme.focus);
+        widget.style.setProperty('--overleaf-notes-checklist-card-bg', theme.cardBg);
+        widget.style.setProperty('--overleaf-notes-checklist-active-button-bg', theme.activeButtonBg);
+    }
+
+    function makeDraggable(widget, handle, panel) {
+        let pointerId = null;
+        let originX = 0;
+        let originY = 0;
+        let startX = 0;
+        let startY = 0;
+
+        handle.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            if (event.target instanceof Element && event.target.closest(DRAG_IGNORE_SELECTOR)) return;
+            pointerId = event.pointerId;
+            handle.setPointerCapture(pointerId);
+            const rect = widget.getBoundingClientRect();
+            originX = rect.left;
+            originY = rect.top;
+            startX = event.clientX;
+            startY = event.clientY;
+            handle.style.cursor = 'grabbing';
+            bringToFront(widget);
+            event.preventDefault();
+        });
+
+        handle.addEventListener('pointermove', event => {
+            if (event.pointerId !== pointerId) return;
+            applyPosition(widget, panel.id, {
+                x: originX + event.clientX - startX,
+                y: originY + event.clientY - startY,
+            });
+        });
+
+        const release = event => {
+            if (event.pointerId !== pointerId) return;
+            pointerId = null;
+            handle.style.cursor = 'grab';
+        };
+
+        handle.addEventListener('pointerup', release);
+        handle.addEventListener('pointercancel', release);
+    }
+
+    function ensureWidget(panel) {
+        const existing = state.widgets.get(panel.id);
+        if (existing?.isConnected) return existing;
+
+        const widget = document.createElement('section');
+        widget.setAttribute(WIDGET_ATTR, panel.id);
+        widget.dataset.panelId = panel.id;
+        widget.hidden = true;
+
+        const header = document.createElement('div');
+        header.className = 'onc-header';
+
+        const heading = document.createElement('div');
+        heading.className = 'onc-heading';
+
+        const title = document.createElement('h2');
+        title.className = 'onc-title';
+        title.textContent = panel.title;
+
+        const subtitle = document.createElement('p');
+        subtitle.className = 'onc-subtitle';
+        subtitle.textContent = panel.subtitle;
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'onc-close';
+        close.textContent = '×';
+        close.setAttribute('aria-label', `Close ${panel.title}`);
+        close.addEventListener('click', () => closeWidget(panel.id));
+
+        heading.append(title, subtitle);
+        header.append(heading, close);
+
+        const body = document.createElement('div');
+        body.className = 'onc-body';
+        const footer = document.createElement('div');
+        footer.className = 'onc-footer';
+
+        widget.append(header, body, footer);
+        widget.addEventListener('pointerdown', () => bringToFront(widget), true);
+        document.body.appendChild(widget);
+        applyTheme(widget);
+        makeDraggable(widget, header, panel);
+        state.widgets.set(panel.id, widget);
+        return widget;
+    }
+
+    function renderNotesWidget(widget) {
+        const body = widget.querySelector('.onc-body');
+        if (!body) return;
+        body.textContent = '';
+
+        const intro = document.createElement('p');
+        intro.className = 'onc-muted';
+        intro.textContent = 'Keep reviewer feedback, TODOs, or reminders without touching the manuscript.';
+
+        const actions = document.createElement('div');
+        actions.className = 'onc-actions';
+
+        const copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'onc-button';
+        copyButton.textContent = 'Copy';
+
+        const clearButton = document.createElement('button');
+        clearButton.type = 'button';
+        clearButton.className = 'onc-button';
+        clearButton.textContent = 'Clear';
+
+        actions.append(copyButton, clearButton);
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'onc-textarea';
+        textarea.placeholder = 'Write project-specific notes here…';
+        textarea.value = localStorage.getItem(getNotesStorageKey()) || '';
+
+        let saveTimer = null;
+        textarea.addEventListener('input', () => {
+            clearTimeout(saveTimer);
+            setWidgetFooter(widget, 'Saving locally…');
+            saveTimer = window.setTimeout(() => {
+                localStorage.setItem(getNotesStorageKey(), textarea.value);
+                setWidgetFooter(widget, `Saved for ${getProjectName()}`);
+            }, 150);
+        });
+
+        copyButton.addEventListener('click', async () => {
+            await copyText(textarea.value);
+            setWidgetFooter(widget, 'Notes copied to clipboard');
+        });
+
+        clearButton.addEventListener('click', () => {
+            textarea.value = '';
+            localStorage.removeItem(getNotesStorageKey());
+            setWidgetFooter(widget, 'Notes cleared');
+        });
+
+        body.append(intro, actions, textarea);
+        setWidgetFooter(widget, `Autosaves locally for ${getProjectName()}`);
+    }
+
+    function readChecklistItems() {
+        return readJson(getChecklistStorageKey(), []);
+    }
+
+    function writeChecklistItems(items) {
+        writeJson(getChecklistStorageKey(), items);
+    }
+
+    function createChecklistId() {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+
+    function renderChecklistWidget(widget) {
+        const body = widget.querySelector('.onc-body');
+        if (!body) return;
+        body.textContent = '';
+
+        const items = readChecklistItems();
+
+        const form = document.createElement('form');
+        form.className = 'onc-form';
+
+        const input = document.createElement('input');
+        input.className = 'onc-input';
+        input.placeholder = 'Add a task…';
+
+        const addButton = document.createElement('button');
+        addButton.type = 'submit';
+        addButton.className = 'onc-button';
+        addButton.textContent = 'Add';
+
+        form.append(input, addButton);
+        body.appendChild(form);
+
+        const actions = document.createElement('div');
+        actions.className = 'onc-actions';
+        actions.style.justifyContent = 'flex-end';
+
+        const clearDoneButton = document.createElement('button');
+        clearDoneButton.type = 'button';
+        clearDoneButton.className = 'onc-button';
+        clearDoneButton.textContent = 'Clear done';
+        clearDoneButton.addEventListener('click', () => {
+            writeChecklistItems(items.filter(item => !item.done));
+            renderChecklistWidget(widget);
+        });
+
+        actions.appendChild(clearDoneButton);
+        body.appendChild(actions);
+
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            const text = input.value.trim();
+            if (!text) return;
+            writeChecklistItems([{ id: createChecklistId(), text, done: false }, ...items]);
+            renderChecklistWidget(widget);
+        });
+
+        if (!items.length) {
+            const empty = document.createElement('p');
+            empty.className = 'onc-muted';
+            empty.textContent = 'Track figures, references, experiments, or submission checks here.';
+            body.appendChild(empty);
+            setWidgetFooter(widget, '0 tasks stored locally');
+            return;
+        }
+
+        const list = document.createElement('ul');
+        list.className = 'onc-list';
+
+        items.forEach(item => {
+            const row = document.createElement('li');
+            row.className = 'onc-card';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = Boolean(item.done);
+            checkbox.addEventListener('change', () => {
+                writeChecklistItems(items.map(entry => entry.id === item.id ? { ...entry, done: checkbox.checked } : entry));
+                renderChecklistWidget(widget);
+            });
+
+            const text = document.createElement('div');
+            text.style.cssText = `flex:1 1 auto;font-size:0.8125rem;line-height:1.5;text-decoration:${item.done ? 'line-through' : 'none'};opacity:${item.done ? '0.72' : '1'};`;
+            text.textContent = item.text;
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'onc-button';
+            removeButton.textContent = 'Remove';
+            removeButton.addEventListener('click', () => {
+                writeChecklistItems(items.filter(entry => entry.id !== item.id));
+                renderChecklistWidget(widget);
+            });
+
+            row.append(checkbox, text, removeButton);
+            list.appendChild(row);
+        });
+
+        body.appendChild(list);
+        setWidgetFooter(widget, `${items.filter(item => item.done).length}/${items.length} tasks completed`);
+    }
+
+    function renderWidget(panelId) {
+        const panel = PANEL_DEFS.find(entry => entry.id === panelId);
+        if (!panel) return;
+        const widget = ensureWidget(panel);
+        applyTheme(widget);
+        if (panel.id === 'notes') {
+            renderNotesWidget(widget);
+        } else {
+            renderChecklistWidget(widget);
+        }
+    }
+
+    function isWidgetOpen(panelId) {
+        const widget = state.widgets.get(panelId);
+        return Boolean(widget && widget.classList.contains('is-open'));
+    }
+
+    function updateButtonState(panelId) {
+        const button = document.querySelector(`[${BUTTON_ATTR}="${panelId}"]`);
+        if (!button) return;
+        button.classList.toggle('is-open', isWidgetOpen(panelId));
+        button.setAttribute('aria-pressed', isWidgetOpen(panelId) ? 'true' : 'false');
+    }
+
+    function openWidget(panelId) {
+        const panel = PANEL_DEFS.find(entry => entry.id === panelId);
+        if (!panel) return;
+        const widget = ensureWidget(panel);
+        renderWidget(panelId);
+        widget.hidden = false;
+        widget.classList.add('is-open');
+        restoreSize(widget, panel);
+        restorePosition(widget, panel);
+        bringToFront(widget);
+        updateButtonState(panelId);
+    }
+
+    function closeWidget(panelId) {
+        const widget = state.widgets.get(panelId);
+        if (!widget) return;
+        widget.classList.remove('is-open');
+        widget.hidden = true;
+        updateButtonState(panelId);
+    }
+
+    function toggleWidget(panelId) {
+        if (isWidgetOpen(panelId)) {
+            closeWidget(panelId);
+        } else {
+            openWidget(panelId);
+        }
+    }
+
+    function syncButtons() {
+        const context = resolveContext();
+        if (!context.tabsWrapper || !context.templateButton) return;
+
+        const theme = detectTheme();
+        document.documentElement.style.setProperty('--overleaf-notes-checklist-active-button-bg', theme.activeButtonBg);
+
+        PANEL_DEFS.forEach(panel => {
+            let button = context.tabsWrapper.querySelector(`[${BUTTON_ATTR}="${panel.id}"]`);
+            if (!button) {
+                button = createSidebarButton(panel, context.templateButton);
+                context.tabsWrapper.appendChild(button);
+            }
+            updateButtonState(panel.id);
+        });
+    }
+
+    function refreshOpenWidgets(forceRender = false) {
+        PANEL_DEFS.forEach(panel => {
+            const widget = state.widgets.get(panel.id);
+            if (!widget) return;
+            applyTheme(widget);
+            if (widget.classList.contains('is-open') && forceRender) {
+                renderWidget(panel.id);
+                restoreSize(widget, panel);
+                restorePosition(widget, panel);
+            }
+        });
+    }
+
+    function scheduleSync(delay = 0, forceRender = false) {
+        window.clearTimeout(state.refreshTimer);
+        state.refreshTimer = window.setTimeout(() => {
+            syncButtons();
+            const currentProjectId = getProjectId();
+            const shouldRender = forceRender || currentProjectId !== state.lastProjectId;
+            state.lastProjectId = currentProjectId;
+            refreshOpenWidgets(shouldRender);
+        }, delay);
+    }
+
+    function watchDom() {
+        if (state.observer) return;
+        state.observer = new MutationObserver(() => {
+            if (state.lastHref !== window.location.href) {
+                state.lastHref = window.location.href;
+            }
+            scheduleSync(DOM_SYNC_DEBOUNCE_MS);
+        });
+        state.observer.observe(document.documentElement, { childList: true, subtree: true });
+        window.addEventListener('popstate', () => scheduleSync(0));
+        window.addEventListener('hashchange', () => scheduleSync(0));
+        window.addEventListener('focus', () => scheduleSync(0));
+        window.addEventListener('mouseup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
+        window.addEventListener('pointerup', () => PANEL_DEFS.forEach(captureWidgetGeometry), true);
+        window.addEventListener('resize', () => {
+            window.clearTimeout(state.resizeTimer);
+            state.resizeTimer = window.setTimeout(() => {
+                PANEL_DEFS.forEach(panel => {
+                    const widget = state.widgets.get(panel.id);
+                    if (widget && widget.classList.contains('is-open')) {
+                        captureWidgetGeometry(panel);
+                    }
+                });
+            }, DOM_SYNC_DEBOUNCE_MS);
+        });
+    }
+
+    function boot() {
+        if (!document.body) {
+            window.setTimeout(boot, 100);
+            return;
+        }
+        ensureStyle();
+        watchDom();
+        scheduleSync(0);
+    }
+
+    boot();
+})();
