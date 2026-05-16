@@ -6,7 +6,7 @@
 - Write a detailed Markdown report describing what was done and how it worked.
 
 ## Target script
-- File: `/home/runner/work/userscripts/userscripts/Overleaf GitHub Shortcut`
+- File: `Overleaf GitHub Shortcut`
 - Branch: `copilot/fix-overleaf-copilot-extension`
 
 ## What I checked first
@@ -122,8 +122,8 @@ After this fix, the userscript now works in both of these representative Overlea
 That means the GitHub shortcut can still appear even if Overleaf changed the export control implementation without changing the visible label.
 
 ## Files changed
-- Updated: `/home/runner/work/userscripts/userscripts/Overleaf GitHub Shortcut`
-- Added: `/home/runner/work/userscripts/userscripts/overleaf-github-shortcut-fix-report.md`
+- Updated: `Overleaf GitHub Shortcut`
+- Added: `docs/overleaf-github-shortcut-fix-report.md`
 
 ## Final status
 - The Overleaf GitHub userscript issue was reproduced in a representative environment.
