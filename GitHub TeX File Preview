@@ -1,0 +1,295 @@
+// ==UserScript==
+// @name         GitHub TeX File Preview
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Adds a rendered preview panel for .tex files on GitHub using LaTeX.js
+// @author       You
+// @match        https://github.com/*/*/blob/**/*.tex
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20TeX%20File%20Preview
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20TeX%20File%20Preview
+// @grant        GM_xmlhttpRequest
+// @connect      raw.githubusercontent.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const LATEXJS_CSS = 'https://cdn.jsdelivr.net/npm/latex.js@0.12.6/dist/css/katex.min.css';
+    const LATEXJS_URL = 'https://cdn.jsdelivr.net/npm/latex.js@0.12.6/dist/latex.min.js';
+    const PREVIEW_ID = 'tex-preview-panel';
+    const BUTTON_ID = 'tex-preview-btn';
+
+    let latexJsLoaded = false;
+    let previewVisible = false;
+
+    function isTexFilePage() {
+        return /^\/[^/]+\/[^/]+\/blob\//.test(location.pathname) &&
+               location.pathname.endsWith('.tex');
+    }
+
+    function getRawUrl() {
+        const parts = location.pathname.split('/');
+        const owner = parts[1];
+        const repo = parts[2];
+        const branch = parts[4];
+        const filePath = parts.slice(5).join('/');
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+    }
+
+    function fetchRawContent() {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: getRawUrl(),
+                onload: (response) => {
+                    if (response.status === 200) {
+                        resolve(response.responseText);
+                    } else {
+                        reject(new Error(`Failed to fetch raw file: ${response.status}`));
+                    }
+                },
+                onerror: (err) => reject(err)
+            });
+        });
+    }
+
+    function loadCSS(url) {
+        return new Promise((resolve) => {
+            if (document.querySelector(`link[href="${url}"]`)) {
+                resolve();
+                return;
+            }
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = url;
+            link.onload = resolve;
+            link.onerror = resolve;
+            document.head.appendChild(link);
+        });
+    }
+
+    function loadScript(url) {
+        return new Promise((resolve, reject) => {
+            if (document.querySelector(`script[src="${url}"]`)) {
+                resolve();
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = url;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
+    }
+
+    async function loadLatexJs() {
+        if (latexJsLoaded) return;
+        await loadCSS(LATEXJS_CSS);
+        await loadScript(LATEXJS_URL);
+        latexJsLoaded = true;
+    }
+
+    function renderLatex(texSource) {
+        try {
+            const generator = new latexjs.HtmlGenerator({ hyphenate: false });
+            const doc = latexjs.parse(texSource, { generator: generator });
+            return { html: doc.htmlDocument().documentElement.outerHTML, error: null };
+        } catch (e) {
+            return { html: null, error: e.message || String(e) };
+        }
+    }
+
+    function injectStyles() {
+        if (document.getElementById('tex-preview-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'tex-preview-styles';
+        style.textContent = `
+            #${PREVIEW_ID} {
+                border: 1px solid var(--borderColor-default, #d0d7de);
+                border-radius: 6px;
+                padding: 24px 32px;
+                margin-top: 8px;
+                background: var(--bgColor-default, #ffffff);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+                line-height: 1.6;
+                overflow: auto;
+                max-height: 80vh;
+            }
+            #${PREVIEW_ID} iframe {
+                width: 100%;
+                min-height: 600px;
+                border: none;
+                background: #fff;
+            }
+            #${PREVIEW_ID} .tex-preview-error {
+                color: var(--fgColor-danger, #d1242f);
+                padding: 16px;
+                border: 1px solid var(--borderColor-danger-muted, #ffcecb);
+                border-radius: 6px;
+                background: var(--bgColor-danger-muted, #ffebe9);
+                white-space: pre-wrap;
+                font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+                font-size: 12px;
+            }
+            #${PREVIEW_ID} .tex-preview-loading {
+                text-align: center;
+                padding: 40px;
+                color: var(--fgColor-muted, #656d76);
+            }
+            #${BUTTON_ID} {
+                cursor: pointer;
+                padding: 4px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                border-radius: 6px;
+                border: 1px solid var(--button-default-borderColor-rest, rgba(31,35,40,0.15));
+                background: var(--button-default-bgColor-rest, #f6f8fa);
+                color: var(--button-default-fgColor-rest, #24292f);
+                margin-left: 8px;
+                vertical-align: middle;
+            }
+            #${BUTTON_ID}:hover {
+                background: var(--button-default-bgColor-hover, #f3f4f6);
+                border-color: var(--button-default-borderColor-hover, rgba(31,35,40,0.15));
+            }
+            #${BUTTON_ID}.active {
+                background: var(--button-primary-bgColor-rest, #2da44e);
+                color: #fff;
+                border-color: var(--button-primary-borderColor-rest, rgba(31,35,40,0.15));
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function getFileHeader() {
+        return document.querySelector('[class*="react-blob-header"]') ||
+               document.querySelector('.file-header') ||
+               document.querySelector('.Box-header.d-flex') ||
+               document.querySelector('[data-testid="blob-header"]');
+    }
+
+    function getCodeContainer() {
+        return document.querySelector('[class*="react-code-file"]') ||
+               document.querySelector('.blob-wrapper') ||
+               document.querySelector('[data-testid="blob-code"]') ||
+               document.querySelector('.Box-body');
+    }
+
+    function insertButton() {
+        if (document.getElementById(BUTTON_ID)) return;
+        const header = getFileHeader();
+        if (!header) return;
+
+        const btn = document.createElement('button');
+        btn.id = BUTTON_ID;
+        btn.textContent = '📄 Preview';
+        btn.title = 'Toggle rendered LaTeX preview';
+        btn.addEventListener('click', togglePreview);
+
+        const rawBtn = header.querySelector('a[data-testid="raw-button"]') ||
+                       header.querySelector('a[href*="/raw/"]') ||
+                       header.querySelector('[aria-label="Copy raw content"]');
+        if (rawBtn && rawBtn.parentElement) {
+            rawBtn.parentElement.insertBefore(btn, rawBtn.nextSibling);
+        } else {
+            header.appendChild(btn);
+        }
+    }
+
+    function createPreviewPanel() {
+        let panel = document.getElementById(PREVIEW_ID);
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = PREVIEW_ID;
+            const codeContainer = getCodeContainer();
+            if (codeContainer && codeContainer.parentElement) {
+                codeContainer.parentElement.insertBefore(panel, codeContainer.nextSibling);
+            } else {
+                const header = getFileHeader();
+                if (header && header.parentElement) {
+                    header.parentElement.appendChild(panel);
+                }
+            }
+        }
+        return panel;
+    }
+
+    async function togglePreview() {
+        const btn = document.getElementById(BUTTON_ID);
+        const codeContainer = getCodeContainer();
+
+        if (previewVisible) {
+            const panel = document.getElementById(PREVIEW_ID);
+            if (panel) panel.remove();
+            if (codeContainer) codeContainer.style.display = '';
+            if (btn) btn.classList.remove('active');
+            previewVisible = false;
+            return;
+        }
+
+        if (btn) btn.classList.add('active');
+        if (codeContainer) codeContainer.style.display = 'none';
+        previewVisible = true;
+
+        const panel = createPreviewPanel();
+        panel.innerHTML = '<div class="tex-preview-loading">Loading preview…</div>';
+
+        try {
+            await loadLatexJs();
+            const texSource = await fetchRawContent();
+            const { html, error } = renderLatex(texSource);
+
+            if (error) {
+                panel.innerHTML = `<div class="tex-preview-error">LaTeX parse error:\n${escapeHtml(error)}</div>`;
+            } else {
+                const iframe = document.createElement('iframe');
+                iframe.sandbox = 'allow-same-origin';
+                panel.innerHTML = '';
+                panel.appendChild(iframe);
+                iframe.srcdoc = html;
+                iframe.addEventListener('load', () => {
+                    const body = iframe.contentDocument && iframe.contentDocument.body;
+                    if (body) {
+                        iframe.style.height = body.scrollHeight + 40 + 'px';
+                    }
+                });
+            }
+        } catch (e) {
+            panel.innerHTML = `<div class="tex-preview-error">Failed to load preview:\n${escapeHtml(String(e))}</div>`;
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function init() {
+        if (!isTexFilePage()) return;
+        injectStyles();
+        insertButton();
+    }
+
+    // Handle GitHub SPA navigation
+    function observe() {
+        init();
+        document.addEventListener('turbo:load', init);
+        document.addEventListener('pjax:end', init);
+
+        const observer = new MutationObserver(() => {
+            if (isTexFilePage() && !document.getElementById(BUTTON_ID)) {
+                previewVisible = false;
+                init();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', observe);
+    } else {
+        observe();
+    }
+})();
