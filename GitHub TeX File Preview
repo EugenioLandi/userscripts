@@ -9,6 +9,7 @@
 // @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/GitHub%20TeX%20File%20Preview
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
+// @connect      github.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -29,24 +30,34 @@
     }
 
     function getRawUrl() {
-        const parts = location.pathname.split('/');
-        const owner = parts[1];
-        const repo = parts[2];
-        const branch = parts[4];
-        const filePath = parts.slice(5).join('/');
-        return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+        // Try to find the raw URL from the page DOM (most reliable)
+        const rawLink = document.querySelector('a[data-testid="raw-button"]') ||
+                        document.querySelector('a[href*="/raw/"]') ||
+                        document.querySelector('a.btn-sm[href*="raw.githubusercontent.com"]');
+        if (rawLink) {
+            const href = rawLink.getAttribute('href');
+            if (href.startsWith('http')) return href;
+            return location.origin + href;
+        }
+
+        // Fallback: convert /owner/repo/blob/... to /owner/repo/raw/...
+        // This works because GitHub redirects /raw/ URLs to raw.githubusercontent.com
+        const rawPath = location.pathname.replace('/blob/', '/raw/');
+        return location.origin + rawPath;
     }
 
     function fetchRawContent() {
+        const url = getRawUrl();
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: getRawUrl(),
+                url: url,
+                followRedirect: true,
                 onload: (response) => {
                     if (response.status === 200) {
                         resolve(response.responseText);
                     } else {
-                        reject(new Error(`Failed to fetch raw file: ${response.status}`));
+                        reject(new Error(`Failed to fetch raw file: ${response.status} from ${url}`));
                     }
                 },
                 onerror: (err) => reject(err)
