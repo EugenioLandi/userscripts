@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Overleaf ZIP Download with Date
 // @namespace    http://tampermonkey.net/
-// @version      1.3.1
+// @version      1.3.1.1
 // @description  Add custom-named PDF and ZIP downloads to Overleaf with timestamped filenames and status feedback
 // @author       You
 // @match        https://*.overleaf.com/*
@@ -114,7 +114,7 @@
             const response = await fetch(new URL(url, window.location.origin), { credentials: 'include' });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             triggerDownload(await response.blob(), filename);
-            setStatus(anchor, `Saved ${filename}`);
+            setStatus(anchor, `Saved`);
         } catch (error) {
             console.error('[Overleaf downloads]', error);
             setStatus(anchor, `Download failed (${error.message})`, true);
