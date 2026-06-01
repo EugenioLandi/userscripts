@@ -631,9 +631,6 @@
         }
 
         const totalArguments = definitions.length;
-        if (totalArguments === 0) {
-            errors.push('Add at least one argument, a starred form, or a token IF.');
-        }
         if (totalArguments > 9) {
             errors.push('LaTeX command bodies can only use up to 9 parameters (#1 to #9).');
         }
