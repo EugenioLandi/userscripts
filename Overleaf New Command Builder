@@ -997,7 +997,7 @@
         const defaultDelimitedInput = createNumberInput(data.defaultDelimitedCount);
         defaultDelimitedField.wrapper.appendChild(defaultDelimitedInput);
 
-        const tokenField = createField({ label: 'IF/token tests (t)' });
+        const tokenField = createField({ label: 'Token tests (t)' });
         const tokenInput = createNumberInput(data.tokenCount);
         tokenField.wrapper.appendChild(tokenInput);
 
@@ -1118,7 +1118,7 @@
         });
 
         data.tokenValues.forEach((value, index) => {
-            const field = createField({ label: `IF token ${index + 1}`, help: 'Single token used by t<token>.' });
+            const field = createField({ label: `Token test ${index + 1}`, help: 'Single token used by t<token>.' });
             const input = document.createElement('input');
             input.className = 'oncb-input';
             input.type = 'text';
