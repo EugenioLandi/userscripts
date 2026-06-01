@@ -1,0 +1,1363 @@
+// ==UserScript==
+// @name         Overleaf New Command Builder
+// @namespace    http://tampermonkey.net/
+// @version      1.0.0
+// @description  Build \NewDocumentCommand snippets inside Overleaf with live validation and clipboard copy
+// @match        https://*.overleaf.com/project/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20New%20Command%20Builder
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20New%20Command%20Builder
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafNewCommandBuilderInitialized) return;
+    window.__overleafNewCommandBuilderInitialized = true;
+
+    const CONFIG = {
+        styleId: 'overleaf-new-command-builder-style',
+        buttonAttr: 'data-oncb-button',
+        widgetAttr: 'data-oncb-widget',
+        debounceMs: 150,
+        zIndexBase: 100000,
+        widget: {
+            padding: 16,
+            minTop: 72,
+            minWidth: 420,
+            minHeight: 360,
+            defaultWidth: 560,
+            defaultHeight: 720,
+        },
+        selectors: {
+            tabsWrapper: '.ide-rail-tabs-wrapper',
+            fileTreeTab: '[data-rr-ui-event-key="file-tree"]',
+            dragIgnore: 'button, input, textarea, select, label',
+        },
+        storageKey: 'overleaf-new-command-builder',
+    };
+
+    const PANEL = {
+        id: 'new-command-builder',
+        title: 'New command builder',
+        subtitle: 'Build and copy \\NewDocumentCommand snippets',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>',
+        defaultX: 280,
+        defaultY: 112,
+        defaultWidth: 560,
+        defaultHeight: 720,
+    };
+
+    const state = {
+        widget: null,
+        button: null,
+        zIndex: CONFIG.zIndexBase,
+        observer: null,
+        timers: { sync: null },
+        lastHref: window.location.href,
+    };
+
+    const utils = {
+        getProjectId() {
+            const match = window.location.pathname.match(/\/project\/([^/]+)/);
+            return match ? match[1] : null;
+        },
+
+        getProjectName() {
+            const selectors = [
+                '.ide-redesign-toolbar-project-name',
+                '[data-testid="project-name"]',
+                'input[aria-label="Project name"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                const value = el?.value || el?.textContent;
+                if (value?.trim()) return value.trim();
+            }
+            return document.title.replace(/\s*-\s*Overleaf.*$/i, '').trim() || 'Untitled';
+        },
+
+        getStorageScope() {
+            return utils.getProjectId() || `page:${window.location.pathname}`;
+        },
+
+        clamp(value, min, max) {
+            return Math.max(min, Math.min(max, value));
+        },
+
+        debounce(fn, ms) {
+            let timer = null;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => fn(...args), ms);
+            };
+        },
+
+        slug(value) {
+            return String(value || '')
+                .trim()
+                .replace(/\s+/g, '-')
+                .replace(/[^a-z0-9-]/gi, '')
+                .toLowerCase();
+        },
+    };
+
+    const storage = {
+        get(key, fallback = null) {
+            try {
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : fallback;
+            } catch {
+                return fallback;
+            }
+        },
+
+        set(key, value) {
+            try {
+                localStorage.setItem(key, JSON.stringify(value));
+            } catch {
+                // Ignore quota errors
+            }
+        },
+
+        remove(key) {
+            try {
+                localStorage.removeItem(key);
+            } catch {
+                // Ignore
+            }
+        },
+
+        keys: {
+            data: () => `${CONFIG.storageKey}:${utils.getStorageScope()}:data`,
+            position: () => `${CONFIG.storageKey}:position`,
+            size: () => `${CONFIG.storageKey}:size`,
+        },
+    };
+
+    const theme = {
+        get() {
+            return {
+                bg: '#1b222c',
+                fg: '#dbe5f3',
+                border: '#46566f',
+                muted: '#aab6c8',
+                buttonBg: '#273142',
+                hover: '#354258',
+                inputBg: '#2f3a4c',
+                cardBg: '#2f3a4c',
+                activeBg: '#2f3a4c',
+                ok: '#4ade80',
+                error: '#f87171',
+            };
+        },
+
+        apply(element) {
+            Object.entries(theme.get()).forEach(([key, value]) => {
+                element.style.setProperty(`--oncb-${key}`, value);
+            });
+        },
+    };
+
+    function injectStyles() {
+        if (document.getElementById(CONFIG.styleId)) return;
+
+        const style = document.createElement('style');
+        style.id = CONFIG.styleId;
+        style.textContent = `
+            [${CONFIG.buttonAttr}] {
+                position: relative;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                margin-inline: auto;
+                padding: 0 !important;
+            }
+            [${CONFIG.buttonAttr}] .icon-wrapper {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 20px;
+                height: 20px;
+                pointer-events: none;
+            }
+            [${CONFIG.buttonAttr}] svg {
+                width: 20px;
+                height: 20px;
+            }
+            [${CONFIG.buttonAttr}].active {
+                background: var(--oncb-activeBg, #2f3a4c) !important;
+            }
+            [${CONFIG.widgetAttr}] {
+                position: fixed;
+                z-index: ${CONFIG.zIndexBase};
+                display: none;
+                flex-direction: column;
+                width: ${CONFIG.widget.defaultWidth}px;
+                height: ${CONFIG.widget.defaultHeight}px;
+                min-width: ${CONFIG.widget.minWidth}px;
+                min-height: ${CONFIG.widget.minHeight}px;
+                overflow: hidden;
+                resize: both;
+                border: 1px solid var(--oncb-border);
+                border-radius: 14px;
+                background: var(--oncb-bg);
+                color: var(--oncb-fg);
+                box-shadow: 0 22px 48px rgba(15, 23, 42, 0.22);
+            }
+            [${CONFIG.widgetAttr}].open {
+                display: flex;
+            }
+            .oncb-header {
+                display: flex;
+                gap: 10px;
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--oncb-border);
+                cursor: grab;
+                user-select: none;
+            }
+            .oncb-header.dragging {
+                cursor: grabbing;
+            }
+            .oncb-heading {
+                flex: 1;
+                min-width: 0;
+            }
+            .oncb-title {
+                margin: 0;
+                font-size: 15px;
+                font-weight: 700;
+                line-height: 1.35;
+            }
+            .oncb-subtitle {
+                margin: 3px 0 0;
+                font-size: 12px;
+                line-height: 1.45;
+                color: var(--oncb-muted);
+            }
+            .oncb-close {
+                width: 28px;
+                height: 28px;
+                border: 0;
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+                cursor: pointer;
+                font-size: 17px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .oncb-close:hover {
+                background: var(--oncb-hover);
+            }
+            .oncb-body {
+                flex: 1;
+                overflow: auto;
+                padding: 14px 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .oncb-footer {
+                padding: 10px 16px 14px;
+                border-top: 1px solid var(--oncb-border);
+                font-size: 11px;
+                color: var(--oncb-muted);
+            }
+            .oncb-muted {
+                margin: 0;
+                font-size: 13px;
+                line-height: 1.5;
+                color: var(--oncb-muted);
+            }
+            .oncb-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+            }
+            .oncb-field,
+            .oncb-card {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                padding: 10px 12px;
+                border: 1px solid var(--oncb-border);
+                border-radius: 8px;
+                background: var(--oncb-cardBg);
+            }
+            .oncb-field.full {
+                grid-column: 1 / -1;
+            }
+            .oncb-card-title,
+            .oncb-label {
+                font-size: 12px;
+                font-weight: 700;
+                line-height: 1.4;
+            }
+            .oncb-help {
+                font-size: 11px;
+                line-height: 1.45;
+                color: var(--oncb-muted);
+            }
+            .oncb-input,
+            .oncb-textarea,
+            .oncb-preview {
+                width: 100%;
+                padding: 8px 10px;
+                border: 1px solid var(--oncb-border);
+                border-radius: 6px;
+                background: var(--oncb-inputBg);
+                color: inherit;
+                font-size: 13px;
+                box-sizing: border-box;
+            }
+            .oncb-textarea,
+            .oncb-preview {
+                min-height: 180px;
+                font-family: ui-monospace, monospace;
+                font-size: 12px;
+                line-height: 1.55;
+                resize: vertical;
+            }
+            .oncb-preview {
+                min-height: 220px;
+            }
+            .oncb-number-row,
+            .oncb-inline-row {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+            }
+            .oncb-inline-row .oncb-input {
+                flex: 1;
+                min-width: 0;
+            }
+            .oncb-checkbox {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 13px;
+            }
+            .oncb-actions {
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+            .oncb-button {
+                padding: 6px 10px;
+                border: 1px solid var(--oncb-border);
+                border-radius: 6px;
+                background: var(--oncb-buttonBg);
+                color: inherit;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            .oncb-button:hover {
+                background: var(--oncb-hover);
+            }
+            .oncb-status {
+                padding: 10px 12px;
+                border: 1px solid var(--oncb-border);
+                border-radius: 8px;
+                background: var(--oncb-cardBg);
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            .oncb-status.ok {
+                border-color: rgba(74, 222, 128, 0.5);
+            }
+            .oncb-status.error {
+                border-color: rgba(248, 113, 113, 0.45);
+            }
+            .oncb-status strong {
+                color: var(--oncb-ok);
+            }
+            .oncb-status.error strong {
+                color: var(--oncb-error);
+            }
+            .oncb-list {
+                margin: 0;
+                padding-left: 18px;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                font-size: 12px;
+            }
+            @media (max-width: 720px) {
+                .oncb-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    async function copyToClipboard(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.cssText = 'position:fixed;left:-9999px;';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+    }
+
+    function getDefaultData() {
+        return {
+            commandName: '',
+            comment: '',
+            mandatoryCount: 1,
+            optionalCount: 0,
+            defaultOptionalCount: 0,
+            delimitedCount: 0,
+            defaultDelimitedCount: 0,
+            hasStar: false,
+            tokenCount: 0,
+            optionalDefaults: [],
+            delimitedPairs: [],
+            defaultDelimitedPairs: [],
+            tokenValues: [],
+            body: '',
+        };
+    }
+
+    function normalizeCount(value) {
+        const parsed = Number.parseInt(String(value ?? ''), 10);
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    }
+
+    function normalizeChar(value, fallback = '') {
+        return String(value || '').slice(0, 1) || fallback;
+    }
+
+    function normalizeData(raw) {
+        const defaults = getDefaultData();
+        const data = {
+            ...defaults,
+            ...(raw || {}),
+        };
+
+        data.commandName = String(data.commandName || '');
+        data.comment = String(data.comment || '');
+        data.body = String(data.body || '');
+        data.mandatoryCount = normalizeCount(data.mandatoryCount);
+        data.optionalCount = normalizeCount(data.optionalCount);
+        data.defaultOptionalCount = normalizeCount(data.defaultOptionalCount);
+        data.delimitedCount = normalizeCount(data.delimitedCount);
+        data.defaultDelimitedCount = normalizeCount(data.defaultDelimitedCount);
+        data.tokenCount = normalizeCount(data.tokenCount);
+        data.hasStar = Boolean(data.hasStar);
+
+        data.optionalDefaults = Array.from({ length: data.defaultOptionalCount }, (_, index) => String(data.optionalDefaults?.[index] ?? ''));
+        data.delimitedPairs = Array.from({ length: data.delimitedCount }, (_, index) => ({
+            open: normalizeChar(data.delimitedPairs?.[index]?.open),
+            close: normalizeChar(data.delimitedPairs?.[index]?.close),
+        }));
+        data.defaultDelimitedPairs = Array.from({ length: data.defaultDelimitedCount }, (_, index) => ({
+            open: normalizeChar(data.defaultDelimitedPairs?.[index]?.open),
+            close: normalizeChar(data.defaultDelimitedPairs?.[index]?.close),
+            defaultValue: String(data.defaultDelimitedPairs?.[index]?.defaultValue ?? ''),
+        }));
+        data.tokenValues = Array.from({ length: data.tokenCount }, (_, index) => normalizeChar(data.tokenValues?.[index]));
+
+        return data;
+    }
+
+    function getBuilderData() {
+        return normalizeData(storage.get(storage.keys.data(), getDefaultData()));
+    }
+
+    function saveBuilderData(nextData) {
+        const normalized = normalizeData(nextData);
+        storage.set(storage.keys.data(), normalized);
+        return normalized;
+    }
+
+    function normalizeCommandName(value) {
+        let name = String(value || '').trim();
+        if (!name) return '';
+        if (name.startsWith('{') && name.endsWith('}')) {
+            name = name.slice(1, -1).trim();
+        }
+        name = name.replace(/^\\+/, '');
+        if (!name) return '';
+        return `\\${name}`;
+    }
+
+    function isValidCommandName(name) {
+        return /^\\(?:[A-Za-z@]+|[^\s{}])$/.test(name);
+    }
+
+    function buildDefinitions(data) {
+        const definitions = [];
+        let index = 1;
+
+        for (let i = 0; i < data.mandatoryCount; i += 1) {
+            definitions.push({ index, kind: 'm', spec: 'm', label: `Mandatory argument ${i + 1}`, hint: `Use #${index}` });
+            index += 1;
+        }
+
+        for (let i = 0; i < data.optionalCount; i += 1) {
+            definitions.push({ index, kind: 'o', spec: 'o', label: `Optional argument ${i + 1}`, hint: `Usually inside \\IfValueT{#${index}}{...}` });
+            index += 1;
+        }
+
+        for (let i = 0; i < data.defaultOptionalCount; i += 1) {
+            const defaultValue = data.optionalDefaults[i] ?? '';
+            definitions.push({
+                index,
+                kind: 'O',
+                spec: `O{${defaultValue}}`,
+                label: `Optional-with-default argument ${i + 1}`,
+                hint: `Use #${index}; omitted calls fall back to ${defaultValue || '(empty default)'}`,
+            });
+            index += 1;
+        }
+
+        for (let i = 0; i < data.delimitedCount; i += 1) {
+            const pair = data.delimitedPairs[i] || { open: '', close: '' };
+            definitions.push({
+                index,
+                kind: 'd',
+                spec: `d${pair.open}${pair.close}`,
+                label: `Delimited optional argument ${i + 1}`,
+                hint: `Usually inside \\IfValueT{#${index}}{...}`,
+            });
+            index += 1;
+        }
+
+        for (let i = 0; i < data.defaultDelimitedCount; i += 1) {
+            const pair = data.defaultDelimitedPairs[i] || { open: '', close: '', defaultValue: '' };
+            definitions.push({
+                index,
+                kind: 'D',
+                spec: `D${pair.open}${pair.close}{${pair.defaultValue}}`,
+                label: `Delimited default argument ${i + 1}`,
+                hint: `Use #${index}; omitted calls fall back to ${pair.defaultValue || '(empty default)'}`,
+            });
+            index += 1;
+        }
+
+        if (data.hasStar) {
+            definitions.push({
+                index,
+                kind: 's',
+                spec: 's',
+                label: 'Star boolean',
+                hint: `Usually inside \\IfBooleanTF{#${index}}{...}{...}`,
+            });
+            index += 1;
+        }
+
+        for (let i = 0; i < data.tokenCount; i += 1) {
+            const token = data.tokenValues[i] || '?';
+            definitions.push({
+                index,
+                kind: 't',
+                spec: `t${token}`,
+                label: `Token boolean ${i + 1}`,
+                hint: `Usually inside \\IfBooleanTF{#${index}}{...}{...}`,
+            });
+            index += 1;
+        }
+
+        return definitions;
+    }
+
+    function getStarterLine(definition) {
+        const ref = `#${definition.index}`;
+
+        if (definition.kind === 'o' || definition.kind === 'd') {
+            return `\\IfValueT{${ref}}{${ref}}`;
+        }
+
+        if (definition.kind === 's') {
+            return [
+                `\\IfBooleanTF{${ref}}{`,
+                '    % starred form',
+                '}{',
+                '    % unstarred form',
+                '}',
+            ].join('\n');
+        }
+
+        if (definition.kind === 't') {
+            return [
+                `\\IfBooleanTF{${ref}}{`,
+                '    % token present',
+                '}{',
+                '    % token absent',
+                '}',
+            ].join('\n');
+        }
+
+        return ref;
+    }
+
+    function generateStarterBody(data) {
+        const definitions = buildDefinitions(data);
+        if (definitions.length === 0) return '% Add your macro body here';
+        return definitions.map(getStarterLine).join('\n');
+    }
+
+    function indentBlock(text, spaces = 4) {
+        const indent = ' '.repeat(spaces);
+        return String(text || '')
+            .replace(/\r\n/g, '\n')
+            .split('\n')
+            .map(line => line ? `${indent}${line}` : '')
+            .join('\n');
+    }
+
+    function buildSnippet(data) {
+        const normalized = normalizeData(data);
+        const commandName = normalizeCommandName(normalized.commandName);
+        const definitions = buildDefinitions(normalized);
+        const errors = [];
+
+        if (!commandName) {
+            errors.push('Enter the command name.');
+        } else if (!isValidCommandName(commandName)) {
+            errors.push('Use a single LaTeX command name like \\mycommand or mycommand.');
+        }
+
+        const totalArguments = definitions.length;
+        if (totalArguments === 0) {
+            errors.push('Add at least one argument, a starred form, or a token IF.');
+        }
+        if (totalArguments > 9) {
+            errors.push('LaTeX command bodies can only use up to 9 parameters (#1 to #9).');
+        }
+
+        normalized.optionalDefaults.forEach((value, index) => {
+            if (value === '') errors.push(`Fill the default value for O argument ${index + 1}.`);
+        });
+        normalized.delimitedPairs.forEach((pair, index) => {
+            if (!pair.open || !pair.close) errors.push(`Fill both delimiters for d argument ${index + 1}.`);
+        });
+        normalized.defaultDelimitedPairs.forEach((pair, index) => {
+            if (!pair.open || !pair.close) errors.push(`Fill both delimiters for D argument ${index + 1}.`);
+            if (pair.defaultValue === '') errors.push(`Fill the default value for D argument ${index + 1}.`);
+        });
+        normalized.tokenValues.forEach((token, index) => {
+            if (!token) errors.push(`Fill the token for IF ${index + 1}.`);
+        });
+
+        const body = normalized.body.trim();
+        if (!body) {
+            errors.push('Write the command body or use “Fill starter body”.');
+        }
+
+        const missingArguments = body
+            ? definitions.filter(definition => !new RegExp(`#${definition.index}(?!\\d)`).test(body))
+            : [];
+
+        if (missingArguments.length) {
+            errors.push(`Use every generated field in the body: ${missingArguments.map(definition => `#${definition.index}`).join(', ')}.`);
+        }
+
+        const signature = definitions.map(definition => definition.spec).join(' ');
+        const comment = normalized.comment.trim();
+        const snippetLines = [];
+
+        if (comment) {
+            snippetLines.push(`% ${comment}`);
+        }
+
+        if (!errors.length) {
+            snippetLines.push(`\\NewDocumentCommand{${commandName}}{${signature}}{%`);
+            snippetLines.push(indentBlock(body));
+            snippetLines.push('}');
+        }
+
+        return {
+            ok: errors.length === 0,
+            errors,
+            snippet: snippetLines.join('\n'),
+            signature,
+            definitions,
+            totalArguments,
+            commandName,
+        };
+    }
+
+    function setFooter(message) {
+        const footer = state.widget?.querySelector('.oncb-footer');
+        if (footer) footer.textContent = message;
+    }
+
+    function widgetsCreate() {
+        const widget = document.createElement('section');
+        widget.setAttribute(CONFIG.widgetAttr, PANEL.id);
+        widget.dataset.panelId = PANEL.id;
+
+        const header = document.createElement('div');
+        header.className = 'oncb-header';
+
+        const heading = document.createElement('div');
+        heading.className = 'oncb-heading';
+
+        const title = document.createElement('h2');
+        title.className = 'oncb-title';
+        title.textContent = PANEL.title;
+
+        const subtitle = document.createElement('p');
+        subtitle.className = 'oncb-subtitle';
+        subtitle.textContent = PANEL.subtitle;
+
+        const closeButton = document.createElement('button');
+        closeButton.className = 'oncb-close';
+        closeButton.type = 'button';
+        closeButton.textContent = '×';
+        closeButton.addEventListener('click', () => widgetsClose());
+
+        heading.append(title, subtitle);
+        header.append(heading, closeButton);
+
+        const body = document.createElement('div');
+        body.className = 'oncb-body';
+
+        const footer = document.createElement('div');
+        footer.className = 'oncb-footer';
+
+        widget.append(header, body, footer);
+        document.body.appendChild(widget);
+
+        theme.apply(widget);
+        widgetsMakeDraggable(widget, header);
+        widgetsRestoreGeometry(widget);
+        widget.addEventListener('pointerdown', () => widgetsBringToFront(widget), true);
+
+        state.widget = widget;
+        return widget;
+    }
+
+    function widgetsGet() {
+        return state.widget?.isConnected ? state.widget : widgetsCreate();
+    }
+
+    function widgetsOpen() {
+        const widget = widgetsGet();
+        renderBuilder(widget);
+        widget.classList.add('open');
+        widgetsBringToFront(widget);
+        buttonsUpdateState();
+    }
+
+    function widgetsClose() {
+        if (!state.widget) return;
+        state.widget.classList.remove('open');
+        buttonsUpdateState();
+    }
+
+    function widgetsToggle() {
+        if (state.widget?.classList.contains('open')) {
+            widgetsClose();
+        } else {
+            widgetsOpen();
+        }
+    }
+
+    function widgetsBringToFront(widget) {
+        state.zIndex += 1;
+        widget.style.zIndex = state.zIndex;
+    }
+
+    function widgetsSaveGeometry() {
+        if (!state.widget) return;
+        const rect = state.widget.getBoundingClientRect();
+        storage.set(storage.keys.position(), { x: rect.left, y: rect.top });
+        storage.set(storage.keys.size(), { width: rect.width, height: rect.height });
+    }
+
+    function widgetsRestoreGeometry(widget) {
+        const savedPosition = storage.get(storage.keys.position(), { x: PANEL.defaultX, y: PANEL.defaultY });
+        const savedSize = storage.get(storage.keys.size(), { width: PANEL.defaultWidth, height: PANEL.defaultHeight });
+
+        const x = utils.clamp(savedPosition.x, CONFIG.widget.padding, window.innerWidth - CONFIG.widget.minWidth - CONFIG.widget.padding);
+        const y = utils.clamp(savedPosition.y, CONFIG.widget.minTop, window.innerHeight - CONFIG.widget.minHeight - CONFIG.widget.padding);
+        const width = utils.clamp(savedSize.width, CONFIG.widget.minWidth, window.innerWidth - CONFIG.widget.padding * 2);
+        const height = utils.clamp(savedSize.height, CONFIG.widget.minHeight, window.innerHeight - CONFIG.widget.minTop - CONFIG.widget.padding);
+
+        widget.style.left = `${x}px`;
+        widget.style.top = `${y}px`;
+        widget.style.width = `${width}px`;
+        widget.style.height = `${height}px`;
+    }
+
+    function widgetsMakeDraggable(widget, handle) {
+        let pointerId = null;
+        let startX = 0;
+        let startY = 0;
+        let originX = 0;
+        let originY = 0;
+
+        handle.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            if (event.target.closest(CONFIG.selectors.dragIgnore)) return;
+
+            pointerId = event.pointerId;
+            handle.setPointerCapture(pointerId);
+
+            const rect = widget.getBoundingClientRect();
+            originX = rect.left;
+            originY = rect.top;
+            startX = event.clientX;
+            startY = event.clientY;
+
+            handle.classList.add('dragging');
+            widgetsBringToFront(widget);
+            event.preventDefault();
+        });
+
+        handle.addEventListener('pointermove', (event) => {
+            if (event.pointerId !== pointerId) return;
+
+            const dx = event.clientX - startX;
+            const dy = event.clientY - startY;
+            const x = utils.clamp(originX + dx, CONFIG.widget.padding, window.innerWidth - widget.offsetWidth - CONFIG.widget.padding);
+            const y = utils.clamp(originY + dy, CONFIG.widget.minTop, window.innerHeight - widget.offsetHeight - CONFIG.widget.padding);
+
+            widget.style.left = `${x}px`;
+            widget.style.top = `${y}px`;
+        });
+
+        const release = (event) => {
+            if (event.pointerId !== pointerId) return;
+            pointerId = null;
+            handle.classList.remove('dragging');
+            widgetsSaveGeometry();
+        };
+
+        handle.addEventListener('pointerup', release);
+        handle.addEventListener('pointercancel', release);
+    }
+
+    function createField({ label, help, full = false }) {
+        const wrapper = document.createElement('div');
+        wrapper.className = `oncb-field${full ? ' full' : ''}`;
+
+        const labelElement = document.createElement('label');
+        labelElement.className = 'oncb-label';
+        labelElement.textContent = label;
+        wrapper.appendChild(labelElement);
+
+        if (help) {
+            const helpElement = document.createElement('div');
+            helpElement.className = 'oncb-help';
+            helpElement.textContent = help;
+            wrapper.appendChild(helpElement);
+        }
+
+        return { wrapper, labelElement };
+    }
+
+    function createNumberInput(value) {
+        const input = document.createElement('input');
+        input.className = 'oncb-input';
+        input.type = 'number';
+        input.min = '0';
+        input.max = '9';
+        input.value = String(value);
+        return input;
+    }
+
+    function updateDerivedSections(widget, data, nodes) {
+        const result = buildSnippet(data);
+
+        nodes.status.className = `oncb-status ${result.ok ? 'ok' : 'error'}`;
+        nodes.status.innerHTML = '';
+
+        const heading = document.createElement('strong');
+        heading.textContent = result.ok ? 'Ready to copy.' : 'Needs attention.';
+        nodes.status.appendChild(heading);
+
+        if (result.ok) {
+            const summary = document.createElement('div');
+            summary.textContent = ` ${result.totalArguments} field${result.totalArguments === 1 ? '' : 's'} mapped in ${result.signature || '(none)'}.`;
+            nodes.status.appendChild(summary);
+        } else {
+            const list = document.createElement('ul');
+            list.className = 'oncb-list';
+            result.errors.forEach(error => {
+                const item = document.createElement('li');
+                item.textContent = error;
+                list.appendChild(item);
+            });
+            nodes.status.appendChild(list);
+        }
+
+        nodes.signature.textContent = result.signature || '(empty)';
+        nodes.preview.value = result.snippet || '';
+        nodes.guide.innerHTML = '';
+
+        if (result.definitions.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'oncb-muted';
+            empty.textContent = 'Add fields above to assign #1, #2, and so on.';
+            nodes.guide.appendChild(empty);
+        } else {
+            const list = document.createElement('ul');
+            list.className = 'oncb-list';
+            result.definitions.forEach(definition => {
+                const item = document.createElement('li');
+                item.textContent = `#${definition.index} — ${definition.label} (${definition.spec}) — ${definition.hint}`;
+                list.appendChild(item);
+            });
+            nodes.guide.appendChild(list);
+        }
+
+        return result;
+    }
+
+    function renderBuilder(widget) {
+        const data = getBuilderData();
+        const body = widget.querySelector('.oncb-body');
+        if (!body) return;
+
+        body.textContent = '';
+        theme.apply(widget);
+
+        const intro = document.createElement('p');
+        intro.className = 'oncb-muted';
+        intro.textContent = 'Set the xparse fields, write the body, and copy a ready-to-paste snippet with an optional % comment.';
+
+        const grid = document.createElement('div');
+        grid.className = 'oncb-grid';
+
+        const commandField = createField({ label: 'Command name', help: 'Write mycommand or \\mycommand.', full: true });
+        const commandInput = document.createElement('input');
+        commandInput.className = 'oncb-input';
+        commandInput.type = 'text';
+        commandInput.placeholder = '\\mycommand';
+        commandInput.value = data.commandName;
+        commandField.wrapper.appendChild(commandInput);
+
+        const commentField = createField({ label: 'Optional % comment', help: 'Added above the copied snippet.', full: true });
+        const commentInput = document.createElement('input');
+        commentInput.className = 'oncb-input';
+        commentInput.type = 'text';
+        commentInput.placeholder = 'Short note for the macro';
+        commentInput.value = data.comment;
+        commentField.wrapper.appendChild(commentInput);
+
+        const mandatoryField = createField({ label: 'Mandatory fields (m)' });
+        const mandatoryInput = createNumberInput(data.mandatoryCount);
+        mandatoryField.wrapper.appendChild(mandatoryInput);
+
+        const optionalField = createField({ label: 'Optional fields (o)' });
+        const optionalInput = createNumberInput(data.optionalCount);
+        optionalField.wrapper.appendChild(optionalInput);
+
+        const defaultOptionalField = createField({ label: 'Optional fields with default (O)' });
+        const defaultOptionalInput = createNumberInput(data.defaultOptionalCount);
+        defaultOptionalField.wrapper.appendChild(defaultOptionalInput);
+
+        const delimitedField = createField({ label: 'Delimited optional fields (d)' });
+        const delimitedInput = createNumberInput(data.delimitedCount);
+        delimitedField.wrapper.appendChild(delimitedInput);
+
+        const defaultDelimitedField = createField({ label: 'Delimited fields with default (D)' });
+        const defaultDelimitedInput = createNumberInput(data.defaultDelimitedCount);
+        defaultDelimitedField.wrapper.appendChild(defaultDelimitedInput);
+
+        const tokenField = createField({ label: 'IF/token tests (t)' });
+        const tokenInput = createNumberInput(data.tokenCount);
+        tokenField.wrapper.appendChild(tokenInput);
+
+        const starField = createField({ label: 'Starred form (s)', help: 'Adds a boolean for \\IfBooleanTF.' });
+        const starLabel = document.createElement('label');
+        starLabel.className = 'oncb-checkbox';
+        const starInput = document.createElement('input');
+        starInput.type = 'checkbox';
+        starInput.checked = data.hasStar;
+        const starText = document.createElement('span');
+        starText.textContent = 'Include a starred variant';
+        starLabel.append(starInput, starText);
+        starField.wrapper.appendChild(starLabel);
+
+        [
+            commandField.wrapper,
+            commentField.wrapper,
+            mandatoryField.wrapper,
+            optionalField.wrapper,
+            defaultOptionalField.wrapper,
+            delimitedField.wrapper,
+            defaultDelimitedField.wrapper,
+            tokenField.wrapper,
+            starField.wrapper,
+        ].forEach(node => grid.appendChild(node));
+
+        const dynamicFields = document.createElement('div');
+        dynamicFields.className = 'oncb-grid';
+
+        data.optionalDefaults.forEach((value, index) => {
+            const field = createField({ label: `O default ${index + 1}` });
+            const input = document.createElement('input');
+            input.className = 'oncb-input';
+            input.type = 'text';
+            input.placeholder = 'default text';
+            input.value = value;
+            input.addEventListener('input', () => {
+                const nextData = getBuilderData();
+                nextData.optionalDefaults[index] = input.value;
+                saveBuilderData(nextData);
+                updateDerivedSections(widget, nextData, nodes);
+            });
+            field.wrapper.appendChild(input);
+            dynamicFields.appendChild(field.wrapper);
+        });
+
+        data.delimitedPairs.forEach((pair, index) => {
+            const field = createField({ label: `d delimiters ${index + 1}`, help: 'One opening and one closing token.' });
+            const row = document.createElement('div');
+            row.className = 'oncb-inline-row';
+            const openInput = document.createElement('input');
+            openInput.className = 'oncb-input';
+            openInput.type = 'text';
+            openInput.maxLength = 1;
+            openInput.placeholder = '(';
+            openInput.value = pair.open;
+            const closeInput = document.createElement('input');
+            closeInput.className = 'oncb-input';
+            closeInput.type = 'text';
+            closeInput.maxLength = 1;
+            closeInput.placeholder = ')';
+            closeInput.value = pair.close;
+            [openInput, closeInput].forEach((input, position) => {
+                input.addEventListener('input', () => {
+                    const nextData = getBuilderData();
+                    nextData.delimitedPairs[index][position === 0 ? 'open' : 'close'] = input.value.slice(0, 1);
+                    saveBuilderData(nextData);
+                    updateDerivedSections(widget, nextData, nodes);
+                });
+            });
+            row.append(openInput, closeInput);
+            field.wrapper.appendChild(row);
+            dynamicFields.appendChild(field.wrapper);
+        });
+
+        data.defaultDelimitedPairs.forEach((pair, index) => {
+            const field = createField({ label: `D settings ${index + 1}`, help: 'One token for each delimiter plus a default.' });
+            const row = document.createElement('div');
+            row.className = 'oncb-inline-row';
+            const openInput = document.createElement('input');
+            openInput.className = 'oncb-input';
+            openInput.type = 'text';
+            openInput.maxLength = 1;
+            openInput.placeholder = '[';
+            openInput.value = pair.open;
+            const closeInput = document.createElement('input');
+            closeInput.className = 'oncb-input';
+            closeInput.type = 'text';
+            closeInput.maxLength = 1;
+            closeInput.placeholder = ']';
+            closeInput.value = pair.close;
+            const defaultInput = document.createElement('input');
+            defaultInput.className = 'oncb-input';
+            defaultInput.type = 'text';
+            defaultInput.placeholder = 'default text';
+            defaultInput.value = pair.defaultValue;
+            openInput.addEventListener('input', () => {
+                const nextData = getBuilderData();
+                nextData.defaultDelimitedPairs[index].open = openInput.value.slice(0, 1);
+                saveBuilderData(nextData);
+                updateDerivedSections(widget, nextData, nodes);
+            });
+            closeInput.addEventListener('input', () => {
+                const nextData = getBuilderData();
+                nextData.defaultDelimitedPairs[index].close = closeInput.value.slice(0, 1);
+                saveBuilderData(nextData);
+                updateDerivedSections(widget, nextData, nodes);
+            });
+            defaultInput.addEventListener('input', () => {
+                const nextData = getBuilderData();
+                nextData.defaultDelimitedPairs[index].defaultValue = defaultInput.value;
+                saveBuilderData(nextData);
+                updateDerivedSections(widget, nextData, nodes);
+            });
+            row.append(openInput, closeInput, defaultInput);
+            field.wrapper.appendChild(row);
+            dynamicFields.appendChild(field.wrapper);
+        });
+
+        data.tokenValues.forEach((value, index) => {
+            const field = createField({ label: `IF token ${index + 1}`, help: 'Single token used by t<token>.' });
+            const input = document.createElement('input');
+            input.className = 'oncb-input';
+            input.type = 'text';
+            input.maxLength = 1;
+            input.placeholder = '+';
+            input.value = value;
+            input.addEventListener('input', () => {
+                const nextData = getBuilderData();
+                nextData.tokenValues[index] = input.value.slice(0, 1);
+                saveBuilderData(nextData);
+                updateDerivedSections(widget, nextData, nodes);
+            });
+            field.wrapper.appendChild(input);
+            dynamicFields.appendChild(field.wrapper);
+        });
+
+        const status = document.createElement('div');
+        status.className = 'oncb-status';
+
+        const signatureCard = document.createElement('div');
+        signatureCard.className = 'oncb-card';
+        const signatureTitle = document.createElement('div');
+        signatureTitle.className = 'oncb-card-title';
+        signatureTitle.textContent = 'Generated signature';
+        const signatureValue = document.createElement('div');
+        signatureValue.className = 'oncb-help';
+        signatureCard.append(signatureTitle, signatureValue);
+
+        const guideCard = document.createElement('div');
+        guideCard.className = 'oncb-card';
+        const guideTitle = document.createElement('div');
+        guideTitle.className = 'oncb-card-title';
+        guideTitle.textContent = 'Field order';
+        const guideBody = document.createElement('div');
+        guideCard.append(guideTitle, guideBody);
+
+        const bodyField = createField({
+            label: 'Command body',
+            help: 'Every generated field must appear somewhere in the body.',
+            full: true,
+        });
+        const bodyInput = document.createElement('textarea');
+        bodyInput.className = 'oncb-textarea';
+        bodyInput.placeholder = 'Write the body that will go inside \\NewDocumentCommand.';
+        bodyInput.value = data.body;
+        bodyField.wrapper.appendChild(bodyInput);
+
+        const actions = document.createElement('div');
+        actions.className = 'oncb-actions';
+        const starterButton = document.createElement('button');
+        starterButton.className = 'oncb-button';
+        starterButton.type = 'button';
+        starterButton.textContent = 'Fill starter body';
+        const copyButton = document.createElement('button');
+        copyButton.className = 'oncb-button';
+        copyButton.type = 'button';
+        copyButton.textContent = 'Copy code';
+        const clearButton = document.createElement('button');
+        clearButton.className = 'oncb-button';
+        clearButton.type = 'button';
+        clearButton.textContent = 'Clear';
+        actions.append(starterButton, copyButton, clearButton);
+
+        const previewField = createField({ label: 'Preview', help: 'Copied exactly as shown here.', full: true });
+        const preview = document.createElement('textarea');
+        preview.className = 'oncb-preview';
+        preview.readOnly = true;
+        previewField.wrapper.appendChild(preview);
+
+        const nodes = {
+            status,
+            signature: signatureValue,
+            guide: guideBody,
+            preview,
+        };
+
+        const persistCounts = () => {
+            const nextData = getBuilderData();
+            nextData.mandatoryCount = normalizeCount(mandatoryInput.value);
+            nextData.optionalCount = normalizeCount(optionalInput.value);
+            nextData.defaultOptionalCount = normalizeCount(defaultOptionalInput.value);
+            nextData.delimitedCount = normalizeCount(delimitedInput.value);
+            nextData.defaultDelimitedCount = normalizeCount(defaultDelimitedInput.value);
+            nextData.tokenCount = normalizeCount(tokenInput.value);
+            nextData.hasStar = starInput.checked;
+            saveBuilderData(nextData);
+            renderBuilder(widget);
+        };
+
+        commandInput.addEventListener('input', () => {
+            const nextData = getBuilderData();
+            nextData.commandName = commandInput.value;
+            saveBuilderData(nextData);
+            updateDerivedSections(widget, nextData, nodes);
+        });
+
+        commentInput.addEventListener('input', () => {
+            const nextData = getBuilderData();
+            nextData.comment = commentInput.value;
+            saveBuilderData(nextData);
+            updateDerivedSections(widget, nextData, nodes);
+        });
+
+        [mandatoryInput, optionalInput, defaultOptionalInput, delimitedInput, defaultDelimitedInput, tokenInput].forEach(input => {
+            input.addEventListener('change', persistCounts);
+            input.addEventListener('input', utils.debounce(persistCounts, CONFIG.debounceMs));
+        });
+
+        starInput.addEventListener('change', persistCounts);
+
+        bodyInput.addEventListener('input', () => {
+            const nextData = getBuilderData();
+            nextData.body = bodyInput.value;
+            saveBuilderData(nextData);
+            updateDerivedSections(widget, nextData, nodes);
+        });
+
+        starterButton.addEventListener('click', () => {
+            const nextData = getBuilderData();
+            nextData.body = generateStarterBody(nextData);
+            saveBuilderData(nextData);
+            bodyInput.value = nextData.body;
+            updateDerivedSections(widget, nextData, nodes);
+            setFooter(`Starter body generated for ${utils.getProjectName()}`);
+        });
+
+        copyButton.addEventListener('click', async () => {
+            const currentData = getBuilderData();
+            const result = updateDerivedSections(widget, currentData, nodes);
+            if (!result.ok || !result.snippet) {
+                setFooter('Fix the highlighted issues before copying');
+                return;
+            }
+
+            await copyToClipboard(result.snippet);
+            setFooter('Command copied to clipboard');
+        });
+
+        clearButton.addEventListener('click', () => {
+            if (!window.confirm('Clear the saved builder data for this Overleaf project?')) return;
+            storage.remove(storage.keys.data());
+            renderBuilder(widget);
+            setFooter(`Builder reset for ${utils.getProjectName()}`);
+        });
+
+        body.append(
+            intro,
+            grid,
+            dynamicFields,
+            status,
+            signatureCard,
+            guideCard,
+            bodyField.wrapper,
+            actions,
+            previewField.wrapper,
+        );
+
+        updateDerivedSections(widget, data, nodes);
+        setFooter(`Stored locally for ${utils.getProjectName()}`);
+    }
+
+    function buttonsFindContainer() {
+        const wrapper = document.querySelector(CONFIG.selectors.tabsWrapper);
+        const fileTreeTab = wrapper?.querySelector(CONFIG.selectors.fileTreeTab);
+        const template = fileTreeTab || wrapper?.querySelector('button, [role="tab"]');
+        return { wrapper, template };
+    }
+
+    function buttonsCreate(template) {
+        const button = document.createElement('button');
+        const classList = template
+            ? [...template.classList].filter(item => !['d-flex', 'flex-column', 'align-items-center', 'justify-content-center', 'text-center', 'p-0', 'px-0', 'py-0'].includes(item))
+            : ['nav-link'];
+
+        button.className = classList.join(' ');
+        button.type = 'button';
+        button.setAttribute(CONFIG.buttonAttr, PANEL.id);
+        button.dataset.panelId = PANEL.id;
+        button.setAttribute('aria-label', PANEL.title);
+        button.setAttribute('title', PANEL.title);
+
+        const iconWrapper = document.createElement('span');
+        iconWrapper.className = 'icon-wrapper';
+        iconWrapper.innerHTML = PANEL.icon;
+        button.appendChild(iconWrapper);
+
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            widgetsToggle();
+        }, true);
+
+        state.button = button;
+        return button;
+    }
+
+    function buttonsUpdateState() {
+        if (!state.button) return;
+        const isOpen = Boolean(state.widget?.classList.contains('open'));
+        state.button.classList.toggle('active', isOpen);
+        state.button.setAttribute('aria-pressed', isOpen ? 'true' : 'false');
+    }
+
+    function buttonsSync() {
+        const { wrapper, template } = buttonsFindContainer();
+        if (!wrapper || !template) return;
+
+        document.documentElement.style.setProperty('--oncb-activeBg', theme.get().activeBg);
+
+        let button = wrapper.querySelector(`[${CONFIG.buttonAttr}="${PANEL.id}"]`);
+        if (!button) {
+            button = buttonsCreate(template);
+            wrapper.appendChild(button);
+        } else {
+            state.button = button;
+        }
+
+        buttonsUpdateState();
+    }
+
+    function syncAll() {
+        buttonsSync();
+    }
+
+    function scheduledSync(delay = 0) {
+        clearTimeout(state.timers.sync);
+        state.timers.sync = setTimeout(syncAll, delay);
+    }
+
+    function watchDom() {
+        if (state.observer) return;
+
+        state.observer = new MutationObserver(() => {
+            if (state.lastHref !== window.location.href) {
+                state.lastHref = window.location.href;
+                if (state.widget?.classList.contains('open')) {
+                    renderBuilder(state.widget);
+                }
+            }
+            scheduledSync(CONFIG.debounceMs);
+        });
+
+        state.observer.observe(document.documentElement, { childList: true, subtree: true });
+
+        window.addEventListener('popstate', () => scheduledSync(0));
+        window.addEventListener('hashchange', () => scheduledSync(0));
+        window.addEventListener('focus', () => scheduledSync(0));
+        window.addEventListener('mouseup', widgetsSaveGeometry, true);
+        window.addEventListener('pointerup', widgetsSaveGeometry, true);
+        window.addEventListener('resize', utils.debounce(() => {
+            if (state.widget?.classList.contains('open')) {
+                widgetsRestoreGeometry(state.widget);
+            }
+        }, CONFIG.debounceMs));
+    }
+
+    function init() {
+        if (!document.body) {
+            setTimeout(init, 100);
+            return;
+        }
+
+        injectStyles();
+        watchDom();
+        scheduledSync(0);
+    }
+
+    init();
+})();
