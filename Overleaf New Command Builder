@@ -618,6 +618,10 @@
             .join('\n');
     }
 
+    function bodyUsesField(body, index) {
+        return String(body || '').includes(`#${index}`);
+    }
+
     function buildSnippet(data) {
         const normalized = normalizeData(data);
         const commandName = normalizeCommandName(normalized.commandName);
@@ -655,7 +659,7 @@
         }
 
         const missingArguments = body
-            ? definitions.filter(definition => !new RegExp(`#${definition.index}(?!\\d)`).test(body))
+            ? definitions.filter(definition => !bodyUsesField(body, definition.index))
             : [];
 
         if (missingArguments.length) {
@@ -803,7 +807,13 @@
             if (event.target.closest(CONFIG.selectors.dragIgnore)) return;
 
             pointerId = event.pointerId;
-            handle.setPointerCapture(pointerId);
+            if (typeof handle.setPointerCapture === 'function') {
+                try {
+                    handle.setPointerCapture(pointerId);
+                } catch {
+                    // Ignore lost-pointer races
+                }
+            }
 
             const rect = widget.getBoundingClientRect();
             originX = rect.left;
