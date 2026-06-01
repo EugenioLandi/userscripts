@@ -518,7 +518,7 @@
                 kind: 'O',
                 spec: `O{${defaultValue}}`,
                 label: `Optional-with-default argument ${i + 1}`,
-                hint: `Use #${index}; omitted calls fall back to ${defaultValue || '(empty default)'}`,
+                hint: `Use #${index}; when omitted, defaults to ${defaultValue || '(empty default)'}`,
             });
             index += 1;
         }
@@ -542,7 +542,7 @@
                 kind: 'D',
                 spec: `D${pair.open}${pair.close}{${pair.defaultValue}}`,
                 label: `Delimited default argument ${i + 1}`,
-                hint: `Use #${index}; omitted calls fall back to ${pair.defaultValue || '(empty default)'}`,
+                hint: `Use #${index}; when omitted, defaults to ${pair.defaultValue || '(empty default)'}`,
             });
             index += 1;
         }
@@ -624,7 +624,12 @@
             .split('\n')
             .map(line => {
                 for (let index = 0; index < line.length; index += 1) {
-                    if (line[index] === '%' && line[index - 1] !== '\\') {
+                    if (line[index] !== '%') continue;
+                    let backslashCount = 0;
+                    for (let cursor = index - 1; cursor >= 0 && line[cursor] === '\\'; cursor -= 1) {
+                        backslashCount += 1;
+                    }
+                    if (backslashCount % 2 === 0) {
                         return line.slice(0, index);
                     }
                 }
@@ -665,7 +670,7 @@
             if (pair.defaultValue === '') errors.push(`Fill the default value for D argument ${index + 1}.`);
         });
         normalized.tokenValues.forEach((token, index) => {
-            if (!token) errors.push(`Fill the token for IF ${index + 1}.`);
+            if (!token) errors.push(`Fill the token for token test ${index + 1}.`);
         });
 
         const body = normalized.body.trim();
