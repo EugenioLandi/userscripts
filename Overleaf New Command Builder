@@ -618,8 +618,23 @@
             .join('\n');
     }
 
+    function stripLatexComments(text) {
+        return String(text || '')
+            .replace(/\r\n/g, '\n')
+            .split('\n')
+            .map(line => {
+                for (let index = 0; index < line.length; index += 1) {
+                    if (line[index] === '%' && line[index - 1] !== '\\') {
+                        return line.slice(0, index);
+                    }
+                }
+                return line;
+            })
+            .join('\n');
+    }
+
     function bodyUsesField(body, index) {
-        return String(body || '').includes(`#${index}`);
+        return stripLatexComments(body).includes(`#${index}`);
     }
 
     function buildSnippet(data) {
@@ -1238,7 +1253,8 @@
         });
 
         clearButton.addEventListener('click', () => {
-            if (!window.confirm('Clear the saved builder data for this Overleaf project?')) return;
+            const scopeLabel = utils.getProjectId() ? 'this Overleaf project' : 'this Overleaf page';
+            if (!window.confirm(`Clear the saved builder data for ${scopeLabel}?`)) return;
             storage.remove(storage.keys.data());
             renderBuilder(widget);
             setFooter(`Builder reset for ${utils.getProjectName()}`);
