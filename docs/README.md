@@ -99,8 +99,8 @@ If you want a manual refresh:
 
 #### Overleaf New Command Builder
 - **Site:** `https://*.overleaf.com/*`
-- **Purpose:** helps build new LaTeX command snippets more quickly.
-- **Best for:** repetitive macro creation.
+- **Purpose:** helps build xparse command and environment snippets more quickly.
+- **Best for:** repetitive macro and environment creation.
 
 #### Overleaf Notes and Checklist
 - **Site:** `https://*.overleaf.com/*`
