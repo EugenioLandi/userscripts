@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.4.2
-// @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
+// @version      2.5.0
+// @description  Display Copilot used credits with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/*
 // @match        https://github.com/*/agents*
@@ -42,6 +42,58 @@
     function parseCount(value) {
         const numeric = Number(String(value || '').replace(/[^\d.]/g, ''));
         return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    function formatCount(value) {
+        return new Intl.NumberFormat('en-US').format(value);
+    }
+
+    function findCreditUsageInText(text) {
+        const normalized = normalizeWhitespace(text);
+        const patterns = [
+            /(?:included\s+)?credits?.{0,80}?(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*ai\s*credits?/i,
+            /(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s*ai\s*credits?/i,
+            /ai\s*credits?.{0,80}?(\d[\d,]*)\s*\/\s*(\d[\d,]*)/i,
+            /(\d[\d,]*)\s*used\s*of\s*(\d[\d,]*)\s*ai\s*credits?/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = normalized.match(pattern);
+            if (!match) continue;
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (!used || !total) continue;
+            return {
+                used,
+                total,
+                label: `${formatCount(used)} / ${formatCount(total)} AI credits`,
+            };
+        }
+
+        return null;
+    }
+
+    function findCreditUsageInScripts(html) {
+        const patterns = [
+            /"usedCredits"\s*:\s*(\d[\d,]*)\s*,\s*"totalCredits"\s*:\s*(\d[\d,]*)/i,
+            /"creditsUsed"\s*:\s*(\d[\d,]*)\s*,\s*"creditsTotal"\s*:\s*(\d[\d,]*)/i,
+            /"includedCreditsUsed"\s*:\s*(\d[\d,]*)\s*,\s*"includedCreditsTotal"\s*:\s*(\d[\d,]*)/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (!match) continue;
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (!used || !total) continue;
+            return {
+                used,
+                total,
+                label: `${formatCount(used)} / ${formatCount(total)} AI credits`,
+            };
+        }
+
+        return null;
     }
 
     function findPercentageInScripts(html) {
@@ -120,6 +172,10 @@
         return null;
     }
 
+    function findCreditUsage(doc, html) {
+        return findCreditUsageInScripts(html) ?? findCreditUsageInText(doc.body?.textContent || '');
+    }
+
     function requiresSignIn(doc) {
         return Boolean(
             doc.querySelector('form[action="/session"]') ||
@@ -135,7 +191,9 @@
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
+        const credits = findCreditUsage(doc, html);
         const percentage = (
+            credits ? clampPercentage((credits.used / credits.total) * 100) :
             findPercentageInProgressBars(doc) ??
             findPercentageInScripts(html) ??
             findPercentageFromFractions(doc.body.textContent) ??
@@ -144,6 +202,7 @@
 
         return {
             percentage,
+            credits,
             requiresSignIn: percentage === null && requiresSignIn(doc),
         };
     }
@@ -286,8 +345,8 @@
         setDisplayState('Refreshing…');
 
         try {
-            const { percentage, requiresSignIn: signInRequired } = await fetchUsageState();
-            if (percentage === null) {
+            const { percentage, credits, requiresSignIn: signInRequired } = await fetchUsageState();
+            if (!credits && percentage === null) {
                 const title = signInRequired
                     ? 'GitHub sign-in is required to read Copilot usage. Click to retry.'
                     : 'Usage percentage not found on the Copilot settings page. Click to retry.';
@@ -296,7 +355,11 @@
             }
 
             const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            setDisplayState(`${percentage}% • ${timestamp}`, percentage, `Last updated at ${timestamp}. Click to refresh.`);
+            setDisplayState(
+                credits?.label || `${percentage}%`,
+                percentage,
+                `Last updated at ${timestamp}. Click to refresh.`,
+            );
         } catch (error) {
             console.error('[Copilot Usage Display] Failed to refresh usage:', error);
             setDisplayState('Error', null, `${error.message}. Click to retry.`);
