@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Copilot Usage Display
 // @namespace    http://tampermonkey.net/
-// @version      2.4.2
+// @version      2.5.0
 // @description  Display Copilot premium usage with better parsing, refresh feedback, and GitHub-friendly styling
 // @author       You
 // @match        https://github.com/*
@@ -43,6 +43,39 @@
         const numeric = Number(String(value || '').replace(/[^\d.]/g, ''));
         return Number.isFinite(numeric) ? numeric : null;
     }
+
+    // --- Credit parsing (current format: "422 / 1,500 AI credits") ---
+
+    function findCreditsFromDOM(doc) {
+        const creditPattern = /(\d[\d,]*)\s*\/\s*(\d[\d,]*)\s+AI credits?/i;
+
+        // Scan all spans for the credits display element
+        for (const span of doc.querySelectorAll('span')) {
+            const text = normalizeWhitespace(span.textContent);
+            const match = text.match(creditPattern);
+            if (!match) continue;
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (used !== null && total !== null && total > 0) {
+                return { used, total };
+            }
+        }
+
+        // Fallback: scan full body text
+        const bodyText = normalizeWhitespace(doc.body?.textContent || '');
+        const match = bodyText.match(creditPattern);
+        if (match) {
+            const used = parseCount(match[1]);
+            const total = parseCount(match[2]);
+            if (used !== null && total !== null && total > 0) {
+                return { used, total };
+            }
+        }
+
+        return null;
+    }
+
+    // --- Percentage parsing (legacy / fallback) ---
 
     function findPercentageInScripts(html) {
         const patterns = [
@@ -110,13 +143,20 @@
     }
 
     function findPercentageInProgressBars(doc) {
-        const candidates = [...doc.querySelectorAll('[role="progressbar"][aria-valuenow]')];
-        for (const el of candidates) {
+        // Current format: .Progress-item with inline width style (e.g. style="width: 28.13%;")
+        for (const el of doc.querySelectorAll('.Progress-item')) {
+            const widthMatch = (el.getAttribute('style') || '').match(/width\s*:\s*(\d+(?:\.\d+)?)\s*%/);
+            if (widthMatch) return clampPercentage(widthMatch[1]);
+        }
+
+        // Legacy format: [role="progressbar"][aria-valuenow]
+        for (const el of doc.querySelectorAll('[role="progressbar"][aria-valuenow]')) {
             const context = normalizeWhitespace(el.closest('section, div, article')?.textContent || el.textContent).toLowerCase();
             if (!/premium|request|usage|limit|quota/.test(context)) continue;
             const value = clampPercentage(el.getAttribute('aria-valuenow'));
             if (value !== null) return value;
         }
+
         return null;
     }
 
@@ -129,22 +169,28 @@
 
     async function fetchUsageState() {
         const response = await fetch(SETTINGS_URL, { credentials: 'include' });
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const html = await response.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
-        const percentage = (
-            findPercentageInProgressBars(doc) ??
-            findPercentageInScripts(html) ??
-            findPercentageFromFractions(doc.body.textContent) ??
-            findPercentageInText(doc.body.textContent)
-        );
+
+        // Try credits first (current page format)
+        const credits = findCreditsFromDOM(doc);
+
+        // Derive percentage for colour-theming: from credits if available, otherwise legacy methods
+        const percentage = credits
+            ? clampPercentage((credits.used / credits.total) * 100)
+            : (
+                findPercentageInProgressBars(doc) ??
+                findPercentageInScripts(html) ??
+                findPercentageFromFractions(doc.body.textContent) ??
+                findPercentageInText(doc.body.textContent)
+            );
 
         return {
+            credits,
             percentage,
-            requiresSignIn: percentage === null && requiresSignIn(doc),
+            requiresSignIn: !credits && percentage === null && requiresSignIn(doc),
         };
     }
 
@@ -286,17 +332,25 @@
         setDisplayState('Refreshing…');
 
         try {
-            const { percentage, requiresSignIn: signInRequired } = await fetchUsageState();
-            if (percentage === null) {
+            const { credits, percentage, requiresSignIn: signInRequired } = await fetchUsageState();
+
+            if (credits === null && percentage === null) {
                 const title = signInRequired
                     ? 'GitHub sign-in is required to read Copilot usage. Click to retry.'
-                    : 'Usage percentage not found on the Copilot settings page. Click to retry.';
+                    : 'Usage data not found on the Copilot settings page. Click to retry.';
                 setDisplayState('Unavailable', null, title);
                 return;
             }
 
             const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            setDisplayState(`${percentage}% • ${timestamp}`, percentage, `Last updated at ${timestamp}. Click to refresh.`);
+
+            // Prefer credits display (e.g. "422/1,500 credits • 14:35"),
+            // fall back to percentage (e.g. "28% • 14:35") for legacy page formats.
+            const label = credits
+                ? `${credits.used.toLocaleString()}/${credits.total.toLocaleString()} credits • ${timestamp}`
+                : `${percentage}% • ${timestamp}`;
+
+            setDisplayState(label, percentage, `Last updated at ${timestamp}. Click to refresh.`);
         } catch (error) {
             console.error('[Copilot Usage Display] Failed to refresh usage:', error);
             setDisplayState('Error', null, `${error.message}. Click to retry.`);
