@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Monitor
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Floating widget showing 5h and 7d Claude usage with manual refresh and persistent position
 // @author       You
 // @match        https://claude.ai/*
@@ -385,6 +385,12 @@
 
         handle.addEventListener('pointerdown', event => {
             if (event.button !== 0) return;
+            // Don't hijack clicks on the toggle/refresh buttons. Without this check,
+            // pointerdown bubbles up from the buttons to this handler, which calls
+            // preventDefault() + setPointerCapture(). Firefox honors that by suppressing
+            // the click event that follows (per the Pointer Events spec), so the buttons
+            // silently stop working there even though Chrome tends to fire click anyway.
+            if (event.target.closest('button')) return;
             pointerId = event.pointerId;
             handle.setPointerCapture(pointerId);
             const rect = element.getBoundingClientRect();
