@@ -18,6 +18,7 @@
 
     const PANEL_ID = 'overleaf-new-command-builder';
     const BUTTON_ID = 'overleaf-new-command-builder-toggle';
+    let lastEditorTarget = null;
 
     function sanitizeCommandName(value) {
         const cleaned = String(value || '')
@@ -48,17 +49,31 @@
         }
     }
 
-    function insertIntoActiveEditor(text) {
-        const active = document.activeElement;
-        if (active && typeof active.setRangeText === 'function') {
-            const start = active.selectionStart ?? 0;
-            const end = active.selectionEnd ?? start;
-            active.setRangeText(text, start, end, 'end');
-            active.dispatchEvent(new Event('input', { bubbles: true }));
+    function trackEditorTarget() {
+        document.addEventListener('focusin', event => {
+            const target = event.target;
+            if (!target) return;
+            if (typeof target.setRangeText === 'function') {
+                lastEditorTarget = target;
+                return;
+            }
+            const editableRoot = target.closest?.('[contenteditable="true"]');
+            if (editableRoot) lastEditorTarget = editableRoot;
+        });
+    }
+
+    function insertIntoActiveEditor(text, preferredTarget) {
+        const target = preferredTarget || lastEditorTarget;
+        if (target && typeof target.setRangeText === 'function') {
+            const start = target.selectionStart ?? 0;
+            const end = target.selectionEnd ?? start;
+            target.focus();
+            target.setRangeText(text, start, end, 'end');
+            target.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
         }
 
-        const editable = active?.closest?.('[contenteditable="true"]') || document.querySelector('[contenteditable="true"]');
+        const editable = target?.closest?.('[contenteditable="true"]') || (target?.matches?.('[contenteditable="true"]') ? target : null);
         if (!editable) return false;
         editable.focus();
         const selection = window.getSelection();
@@ -161,7 +176,7 @@
 
         insertButton.addEventListener('click', async () => {
             const snippet = buildSnippet(nameInput.value, colorInput.value, sampleInput.value);
-            const inserted = insertIntoActiveEditor(snippet);
+            const inserted = insertIntoActiveEditor(snippet, lastEditorTarget);
             if (inserted) {
                 status.textContent = 'Inserted into editor.';
                 return;
@@ -180,8 +195,12 @@
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ensureUi, { once: true });
+        document.addEventListener('DOMContentLoaded', () => {
+            trackEditorTarget();
+            ensureUi();
+        }, { once: true });
     } else {
+        trackEditorTarget();
         ensureUi();
     }
 })();
