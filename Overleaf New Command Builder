@@ -199,7 +199,7 @@
                 return;
             }
             const copied = await copyToClipboard(snippet);
-            status.textContent = copied ? 'Copied to clipboard (focus editor and paste).' : 'Could not insert automatically.';
+            status.textContent = copied ? 'Copied to clipboard (focus editor and paste).' : 'Could not insert or copy. Please copy from preview and paste manually.';
         });
 
         copyButton.addEventListener('click', async () => {
