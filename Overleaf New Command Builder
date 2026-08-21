@@ -61,7 +61,18 @@
         const editable = active?.closest?.('[contenteditable="true"]') || document.querySelector('[contenteditable="true"]');
         if (!editable) return false;
         editable.focus();
-        return document.execCommand('insertText', false, text);
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return false;
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+        const node = document.createTextNode(text);
+        range.insertNode(node);
+        range.setStartAfter(node);
+        range.setEndAfter(node);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+        return true;
     }
 
     function ensureUi() {
@@ -168,13 +179,9 @@
         refreshPreview();
     }
 
-    function init() {
-        ensureUi();
-    }
-
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init, { once: true });
+        document.addEventListener('DOMContentLoaded', ensureUi, { once: true });
     } else {
-        init();
+        ensureUi();
     }
 })();
