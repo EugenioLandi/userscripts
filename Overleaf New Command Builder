@@ -1,0 +1,180 @@
+// ==UserScript==
+// @name         Overleaf New Command Builder
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Build and insert a colored LaTeX command like \COL{blabla} from a 24-bit color picker
+// @match        https://*.overleaf.com/*
+// @updateURL    https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20New%20Command%20Builder
+// @downloadURL  https://raw.githubusercontent.com/EugenioLandi/userscripts/main/Overleaf%20New%20Command%20Builder
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    if (window.__overleafNewCommandBuilderInitialized) return;
+    window.__overleafNewCommandBuilderInitialized = true;
+
+    const PANEL_ID = 'overleaf-new-command-builder';
+    const BUTTON_ID = 'overleaf-new-command-builder-toggle';
+
+    function sanitizeCommandName(value) {
+        const cleaned = String(value || '')
+            .replace(/^\\+/, '')
+            .replace(/[^A-Za-z@]/g, '');
+        return cleaned || 'COL';
+    }
+
+    function buildSnippet(commandName, colorHex, sampleText) {
+        const hex = colorHex.replace('#', '').toUpperCase();
+        const macro = sanitizeCommandName(commandName);
+        const sample = String(sampleText || 'blabla');
+        return [
+            `\\definecolor{${macro}}{HTML}{${hex}}`,
+            `\\newcommand{\\${macro}}[1]{\\textcolor{${macro}}{#1}}`,
+            '',
+            `\\${macro}{${sample}}`,
+        ].join('\n');
+    }
+
+    async function copyToClipboard(text) {
+        if (!navigator.clipboard?.writeText) return false;
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function insertIntoActiveEditor(text) {
+        const active = document.activeElement;
+        if (active && typeof active.setRangeText === 'function') {
+            const start = active.selectionStart ?? 0;
+            const end = active.selectionEnd ?? start;
+            active.setRangeText(text, start, end, 'end');
+            active.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        }
+
+        const editable = active?.closest?.('[contenteditable="true"]') || document.querySelector('[contenteditable="true"]');
+        if (!editable) return false;
+        editable.focus();
+        return document.execCommand('insertText', false, text);
+    }
+
+    function ensureUi() {
+        if (document.getElementById(BUTTON_ID)) return;
+
+        const toggle = document.createElement('button');
+        toggle.id = BUTTON_ID;
+        toggle.type = 'button';
+        toggle.textContent = 'LaTeX Color Cmd';
+        toggle.style.cssText = [
+            'position:fixed',
+            'right:16px',
+            'bottom:16px',
+            'z-index:99999',
+            'padding:8px 10px',
+            'border:1px solid #d0d7de',
+            'border-radius:8px',
+            'background:#fff',
+            'color:#24292f',
+            'font:600 12px/1 system-ui,sans-serif',
+            'cursor:pointer',
+            'box-shadow:0 2px 8px rgba(31,35,40,0.15)',
+        ].join(';');
+
+        const panel = document.createElement('div');
+        panel.id = PANEL_ID;
+        panel.hidden = true;
+        panel.style.cssText = [
+            'position:fixed',
+            'right:16px',
+            'bottom:56px',
+            'z-index:100000',
+            'width:320px',
+            'padding:12px',
+            'border:1px solid #d0d7de',
+            'border-radius:10px',
+            'background:#fff',
+            'box-shadow:0 8px 24px rgba(31,35,40,0.2)',
+            'font:12px/1.4 system-ui,sans-serif',
+            'color:#24292f',
+        ].join(';');
+
+        panel.innerHTML = `
+            <label style="display:block;margin-bottom:8px;">
+                Command name (without \\)
+                <input id="${PANEL_ID}-name" type="text" value="COL" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d0d7de;border-radius:6px;">
+            </label>
+            <label style="display:block;margin-bottom:8px;">
+                Color (24-bit palette)
+                <input id="${PANEL_ID}-color" type="color" value="#ff4d4f" style="width:100%;margin-top:4px;height:34px;border:1px solid #d0d7de;border-radius:6px;padding:2px;background:#fff;">
+            </label>
+            <label style="display:block;margin-bottom:8px;">
+                Sample text
+                <input id="${PANEL_ID}-sample" type="text" value="blabla" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d0d7de;border-radius:6px;">
+            </label>
+            <textarea id="${PANEL_ID}-preview" readonly style="width:100%;height:96px;padding:6px;border:1px solid #d0d7de;border-radius:6px;resize:vertical;"></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="${PANEL_ID}-insert" type="button" style="flex:1;padding:7px;border:1px solid #1f6feb;border-radius:6px;background:#1f6feb;color:#fff;cursor:pointer;">Insert</button>
+                <button id="${PANEL_ID}-copy" type="button" style="flex:1;padding:7px;border:1px solid #d0d7de;border-radius:6px;background:#fff;color:#24292f;cursor:pointer;">Copy</button>
+            </div>
+            <div id="${PANEL_ID}-status" style="margin-top:8px;color:#57606a;"></div>
+        `;
+
+        document.body.appendChild(toggle);
+        document.body.appendChild(panel);
+
+        const nameInput = document.getElementById(`${PANEL_ID}-name`);
+        const colorInput = document.getElementById(`${PANEL_ID}-color`);
+        const sampleInput = document.getElementById(`${PANEL_ID}-sample`);
+        const preview = document.getElementById(`${PANEL_ID}-preview`);
+        const status = document.getElementById(`${PANEL_ID}-status`);
+        const insertButton = document.getElementById(`${PANEL_ID}-insert`);
+        const copyButton = document.getElementById(`${PANEL_ID}-copy`);
+
+        const refreshPreview = () => {
+            preview.value = buildSnippet(nameInput.value, colorInput.value, sampleInput.value);
+            status.textContent = '';
+        };
+
+        toggle.addEventListener('click', () => {
+            panel.hidden = !panel.hidden;
+            if (!panel.hidden) refreshPreview();
+        });
+
+        [nameInput, colorInput, sampleInput].forEach(input => input.addEventListener('input', refreshPreview));
+
+        insertButton.addEventListener('click', async () => {
+            const snippet = buildSnippet(nameInput.value, colorInput.value, sampleInput.value);
+            const inserted = insertIntoActiveEditor(snippet);
+            if (inserted) {
+                status.textContent = 'Inserted into editor.';
+                return;
+            }
+            const copied = await copyToClipboard(snippet);
+            status.textContent = copied ? 'Copied to clipboard (focus editor and paste).' : 'Could not insert automatically.';
+        });
+
+        copyButton.addEventListener('click', async () => {
+            const snippet = buildSnippet(nameInput.value, colorInput.value, sampleInput.value);
+            const copied = await copyToClipboard(snippet);
+            status.textContent = copied ? 'Copied to clipboard.' : 'Clipboard permission denied.';
+        });
+
+        refreshPreview();
+    }
+
+    function init() {
+        ensureUi();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
+})();
